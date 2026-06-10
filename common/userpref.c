@@ -2,6 +2,7 @@
  * userpref.c
  * contains methods to access user specific certificates IDs and more.
  *
+ * Copyright (c) 2013-2021 Nikias Bassen, All Rights Reserved.
  * Copyright (c) 2013-2014 Martin Szulecki All Rights Reserved.
  * Copyright (c) 2008 Jonathan Beck All Rights Reserved.
  *
@@ -28,41 +29,61 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif
-#ifndef WIN32
+#include <dirent.h>
+#ifndef _WIN32
 #include <pwd.h>
-#endif
 #include <unistd.h>
+#include <libgen.h>
+#include <sys/stat.h>
+#endif
 #include <usbmuxd.h>
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL)
+#include <openssl/bn.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
-#else
+#if OPENSSL_VERSION_NUMBER < 0x1010000fL || \
+	(defined(LIBRESSL_VERSION_NUMBER) && (LIBRESSL_VERSION_NUMBER < 0x20700000L))
+#define X509_set1_notBefore X509_set_notBefore
+#define X509_set1_notAfter X509_set_notAfter
+#endif
+#elif defined(HAVE_GNUTLS)
 #include <gnutls/gnutls.h>
 #include <gnutls/crypto.h>
 #include <gnutls/x509.h>
 #include <gcrypt.h>
 #include <libtasn1.h>
+#elif defined(HAVE_MBEDTLS)
+#include <mbedtls/ssl.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/asn1write.h>
+#include <mbedtls/oid.h>
+#else
+#error No supported TLS/SSL library enabled
 #endif
 
-#include <dirent.h>
-#include <libgen.h>
-#include <sys/stat.h>
-#include <errno.h>
-
-#ifdef WIN32
+#ifdef _WIN32
 #include <shlobj.h>
 #endif
 
+#ifndef ETIMEDOUT
+#define ETIMEDOUT 138
+#endif
+
+#include <libimobiledevice/libimobiledevice.h>
+#include <libimobiledevice-glue/utils.h>
+
 #include "userpref.h"
 #include "debug.h"
-#include "utils.h"
 
-#ifndef HAVE_OPENSSL
+#if defined(HAVE_GNUTLS)
 const ASN1_ARRAY_TYPE pkcs1_asn1_tab[] = {
 	{"PKCS1", 536872976, 0},
 	{0, 1073741836, 0},
@@ -73,7 +94,7 @@ const ASN1_ARRAY_TYPE pkcs1_asn1_tab[] = {
 };
 #endif
 
-#ifdef WIN32
+#ifdef _WIN32
 #define DIR_SEP '\\'
 #define DIR_SEP_S "\\"
 #else
@@ -83,7 +104,7 @@ const ASN1_ARRAY_TYPE pkcs1_asn1_tab[] = {
 
 #define USERPREF_CONFIG_EXTENSION ".plist"
 
-#ifdef WIN32
+#ifdef _WIN32
 #define USERPREF_CONFIG_DIR "Apple"DIR_SEP_S"Lockdown"
 #else
 #define USERPREF_CONFIG_DIR "lockdown"
@@ -93,7 +114,7 @@ const ASN1_ARRAY_TYPE pkcs1_asn1_tab[] = {
 
 static char *__config_dir = NULL;
 
-#ifdef WIN32
+#ifdef _WIN32
 static char *userpref_utf16_to_utf8(wchar_t *unistr, long len, long *items_read, long *items_written)
 {
 	if (!unistr || (len <= 0)) return NULL;
@@ -135,7 +156,7 @@ const char *userpref_get_config_dir()
 	if (__config_dir)
 		return __config_dir;
 
-#ifdef WIN32
+#ifdef _WIN32
 	wchar_t path[MAX_PATH+1];
 	HRESULT hr;
 	LPITEMIDLIST pidl = NULL;
@@ -208,14 +229,8 @@ int userpref_read_system_buid(char **system_buid)
  */
 userpref_error_t userpref_get_paired_udids(char ***list, unsigned int *count)
 {
-	struct slist_t {
-		char *name;
-		void *next;
-	};
 	DIR *config_dir;
 	const char *config_path = NULL;
-	struct slist_t *udids = NULL;
-	unsigned int i;
 	unsigned int found = 0;
 
 	if (!list || (list && *list)) {
@@ -226,41 +241,42 @@ userpref_error_t userpref_get_paired_udids(char ***list, unsigned int *count)
 	if (count) {
 		*count = 0;
 	}
+	*list = (char**)malloc(sizeof(char*));
 
 	config_path = userpref_get_config_dir();
 	config_dir = opendir(config_path);
 	if (config_dir) {
 		struct dirent *entry;
-		struct slist_t *listp = udids;
 		while ((entry = readdir(config_dir))) {
-			char *ext = strstr(entry->d_name, USERPREF_CONFIG_EXTENSION);
-			if (ext && ((ext - entry->d_name) == 40) && (strlen(entry->d_name) == (40 + strlen(ext)))) {
-				struct slist_t *ne = (struct slist_t*)malloc(sizeof(struct slist_t));
-				ne->name = (char*)malloc(41);
-				strncpy(ne->name, entry->d_name, 40);
-				ne->name[40] = 0;
-				ne->next = NULL;
-				if (!listp) {
-					listp = ne;
-					udids = listp;
-				} else {
-					listp->next = ne;
-					listp = listp->next;
+			if (strcmp(entry->d_name, USERPREF_CONFIG_FILE) == 0) {
+				/* ignore SystemConfiguration.plist */
+				continue;
+			}
+			char *ext = strrchr(entry->d_name, '.');
+			if (ext && (strcmp(ext, USERPREF_CONFIG_EXTENSION) == 0)) {
+				size_t len = strlen(entry->d_name) - strlen(USERPREF_CONFIG_EXTENSION);
+				char **newlist = (char**)realloc(*list, sizeof(char*) * (found+2));
+				if (!newlist) {
+					fprintf(stderr, "ERROR: Out of memory\n");
+					break;
+				}
+				*list = newlist;
+				char *tmp = (char*)malloc(len+1);
+				if (tmp) {
+					strncpy(tmp, entry->d_name, len);
+					tmp[len] = '\0';
+				}
+				(*list)[found] = tmp;
+				if (!tmp) {
+					fprintf(stderr, "ERROR: Out of memory\n");
+					break;
 				}
 				found++;
 			}
 		}
 		closedir(config_dir);
 	}
-	*list = (char**)malloc(sizeof(char*) * (found+1));
-	i = 0;
-	while (udids) {
-		(*list)[i++] = udids->name;
-		struct slist_t *old = udids;
-		udids = udids->next;
-		free(old);
-	}
-	(*list)[i] = NULL;
+	(*list)[found] = NULL;
 
 	if (count) {
 		*count = found;
@@ -273,19 +289,20 @@ userpref_error_t userpref_get_paired_udids(char ***list, unsigned int *count)
  * Save a pair record for a device.
  *
  * @param udid The device UDID as given by the device
+ * @param device_id The usbmux device id (handle) of the connected device, or 0
  * @param pair_record The pair record to save
  *
  * @return 1 on success and 0 if no device record is given or if it has already
  *         been saved previously.
  */
-userpref_error_t userpref_save_pair_record(const char *udid, plist_t pair_record)
+userpref_error_t userpref_save_pair_record(const char *udid, uint32_t device_id, plist_t pair_record)
 {
 	char* record_data = NULL;
 	uint32_t record_size = 0;
 
 	plist_to_bin(pair_record, &record_data, &record_size);
 
-	int res = usbmuxd_save_pair_record(udid, record_data, record_size);
+	int res = usbmuxd_save_pair_record_with_device_id(udid, device_id, record_data, record_size);
 
 	free(record_data);
 
@@ -298,8 +315,10 @@ userpref_error_t userpref_save_pair_record(const char *udid, plist_t pair_record
  * @param udid The device UDID as given by the device
  * @param pair_record The pair record to read
  *
- * @return 1 on success and 0 if no device record is given or if it has already
- *         been saved previously.
+ * @return USERPREF_E_SUCCESS on success,
+ *     USERPREF_E_NOENT if no pairing record was found,
+ *     USERPREF_E_READ_ERROR if retrieving the pairing record from usbmuxd failed,
+ *     or USERPREF_E_INVALID_CONF otherwise.
  */
 userpref_error_t userpref_read_pair_record(const char *udid, plist_t *pair_record)
 {
@@ -307,24 +326,27 @@ userpref_error_t userpref_read_pair_record(const char *udid, plist_t *pair_recor
 	uint32_t record_size = 0;
 
 	int res = usbmuxd_read_pair_record(udid, &record_data, &record_size);
-
 	if (res < 0) {
-		if (record_data)
-			free(record_data);
-
-		return USERPREF_E_INVALID_CONF;
+		free(record_data);
+		switch (-res) {
+		case ENOENT:
+			return USERPREF_E_NOENT;
+		case ETIMEDOUT:
+			return USERPREF_E_READ_ERROR;
+		default:
+			return USERPREF_E_INVALID_CONF;
+		}
 	}
 
 	*pair_record = NULL;
-	if (memcmp(record_data, "bplist00", 8) == 0) {
-		plist_from_bin(record_data, record_size, pair_record);
-	} else {
-		plist_from_xml(record_data, record_size, pair_record);
-	}
-
+	plist_from_memory(record_data, record_size, pair_record, NULL);
 	free(record_data);
 
-	return res == 0 ? USERPREF_E_SUCCESS: USERPREF_E_UNKNOWN_ERROR;
+	if (!*pair_record) {
+		debug_info("Failed to parse pairing record");
+		return USERPREF_E_INVALID_CONF;
+	}
+	return USERPREF_E_SUCCESS;
 }
 
 /**
@@ -341,7 +363,7 @@ userpref_error_t userpref_delete_pair_record(const char *udid)
 	return res == 0 ? USERPREF_E_SUCCESS: USERPREF_E_UNKNOWN_ERROR;
 }
 
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL)
 static int X509_add_ext_helper(X509 *cert, int nid, char *value)
 {
 	X509_EXTENSION *ex;
@@ -362,6 +384,31 @@ static int X509_add_ext_helper(X509 *cert, int nid, char *value)
 
 	return 1;
 }
+#elif defined(HAVE_MBEDTLS)
+static int _mbedtls_x509write_crt_set_basic_constraints_critical(mbedtls_x509write_cert *ctx, int is_ca, int max_pathlen)
+{
+	int ret;
+	unsigned char buf[9];
+	unsigned char *c = buf + sizeof(buf);
+	size_t len = 0;
+
+	memset( buf, 0, sizeof(buf) );
+
+	if (is_ca && max_pathlen > 127)
+		return( MBEDTLS_ERR_X509_BAD_INPUT_DATA );
+
+	if (is_ca) {
+		if (max_pathlen >= 0) {
+			MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_int( &c, buf, max_pathlen ) );
+		}
+		MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_bool( &c, buf, 1 ) );
+	}
+
+	MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_len( &c, buf, len ) );
+	MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_tag( &c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE ) );
+
+	return mbedtls_x509write_crt_set_extension( ctx, MBEDTLS_OID_BASIC_CONSTRAINTS, MBEDTLS_OID_SIZE( MBEDTLS_OID_BASIC_CONSTRAINTS ), 1, buf + sizeof(buf) - len, len );
+}
 #endif
 
 /**
@@ -373,7 +420,7 @@ static int X509_add_ext_helper(X509 *cert, int nid, char *value)
  *
  * @return 1 if keys were successfully generated, 0 otherwise
  */
-userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_data_t public_key)
+userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_data_t public_key, unsigned int device_version)
 {
 	userpref_error_t ret = USERPREF_E_SSL_ERROR;
 
@@ -388,7 +435,11 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 
 	debug_info("Generating keys and certificates...");
 
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL)
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY* root_pkey = EVP_RSA_gen(2048);
+	EVP_PKEY* host_pkey = EVP_RSA_gen(2048);
+#else
 	BIGNUM *e = BN_new();
 	RSA* root_keypair = RSA_new();
 	RSA* host_keypair = RSA_new();
@@ -405,6 +456,7 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 
 	EVP_PKEY* host_pkey = EVP_PKEY_new();
 	EVP_PKEY_assign_RSA(host_pkey, host_keypair);
+#endif
 
 	/* generate root certificate */
 	X509* root_cert = X509_new();
@@ -424,16 +476,16 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 		/* set key validity */
 		ASN1_TIME* asn1time = ASN1_TIME_new();
 		ASN1_TIME_set(asn1time, time(NULL));
-		X509_set_notBefore(root_cert, asn1time);
+		X509_set1_notBefore(root_cert, asn1time);
 		ASN1_TIME_set(asn1time, time(NULL) + (60 * 60 * 24 * 365 * 10));
-		X509_set_notAfter(root_cert, asn1time);
+		X509_set1_notAfter(root_cert, asn1time);
 		ASN1_TIME_free(asn1time);
 
 		/* use root public key for root cert */
 		X509_set_pubkey(root_cert, root_pkey);
 
 		/* sign root cert with root private key */
-		X509_sign(root_cert, root_pkey, EVP_sha1());
+		X509_sign(root_cert, root_pkey, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? EVP_sha1() : EVP_sha256());
 	}
 
 	/* create host certificate */
@@ -457,16 +509,16 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 		/* set key validity */
 		ASN1_TIME* asn1time = ASN1_TIME_new();
 		ASN1_TIME_set(asn1time, time(NULL));
-		X509_set_notBefore(host_cert, asn1time);
+		X509_set1_notBefore(host_cert, asn1time);
 		ASN1_TIME_set(asn1time, time(NULL) + (60 * 60 * 24 * 365 * 10));
-		X509_set_notAfter(host_cert, asn1time);
+		X509_set1_notAfter(host_cert, asn1time);
 		ASN1_TIME_free(asn1time);
 
 		/* use host public key for host cert */
 		X509_set_pubkey(host_cert, host_pkey);
 
 		/* sign host cert with root private key */
-		X509_sign(host_cert, root_pkey, EVP_sha1());
+		X509_sign(host_cert, root_pkey, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? EVP_sha1() : EVP_sha256());
 	}
 
 	if (root_cert && root_pkey && host_cert && host_pkey) {
@@ -515,12 +567,22 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 		}
 	}
 
-	RSA *pubkey = NULL;
+	EVP_PKEY *pubkey = NULL;
 	{
 		BIO *membp = BIO_new_mem_buf(public_key.data, public_key.size);
-		if (!PEM_read_bio_RSAPublicKey(membp, &pubkey, NULL, NULL)) {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+		if (!PEM_read_bio_PUBKEY(membp, &pubkey, NULL, NULL)) {
 			debug_info("WARNING: Could not read public key");
 		}
+#else
+		RSA *rsa_pubkey = NULL;
+		if (!PEM_read_bio_RSAPublicKey(membp, &rsa_pubkey, NULL, NULL)) {
+			debug_info("WARNING: Could not read public key");
+		} else {
+			pubkey = EVP_PKEY_new();
+			EVP_PKEY_assign_RSA(pubkey, rsa_pubkey);
+		}
+#endif
 		BIO_free(membp);
 	}
 
@@ -537,21 +599,18 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 
 		ASN1_TIME* asn1time = ASN1_TIME_new();
 		ASN1_TIME_set(asn1time, time(NULL));
-		X509_set_notBefore(dev_cert, asn1time);
+		X509_set1_notBefore(dev_cert, asn1time);
 		ASN1_TIME_set(asn1time, time(NULL) + (60 * 60 * 24 * 365 * 10));
-		X509_set_notAfter(dev_cert, asn1time);
+		X509_set1_notAfter(dev_cert, asn1time);
 		ASN1_TIME_free(asn1time);
 
-		EVP_PKEY* pkey = EVP_PKEY_new();
-		EVP_PKEY_assign_RSA(pkey, pubkey);
-		X509_set_pubkey(dev_cert, pkey);
-		EVP_PKEY_free(pkey);
+		X509_set_pubkey(dev_cert, pubkey);
 
 		X509_add_ext_helper(dev_cert, NID_subject_key_identifier, (char*)"hash");
 		X509_add_ext_helper(dev_cert, NID_key_usage, (char*)"critical,digitalSignature,keyEncipherment");
 
 		/* sign device certificate with root private key */
-		if (X509_sign(dev_cert, root_pkey, EVP_sha1())) {
+		if (X509_sign(dev_cert, root_pkey, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? EVP_sha1() : EVP_sha256())) {
 			/* if signing succeeded, export in PEM format */
 			BIO* membp = BIO_new(BIO_s_mem());
 			if (PEM_write_bio_X509(membp, dev_cert) > 0) {
@@ -569,15 +628,15 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 		}
 	}
 
-	X509V3_EXT_cleanup();
 	X509_free(dev_cert);
 
+	EVP_PKEY_free(pubkey);
 	EVP_PKEY_free(root_pkey);
 	EVP_PKEY_free(host_pkey);
 
 	X509_free(host_cert);
 	X509_free(root_cert);
-#else
+#elif defined(HAVE_GNUTLS)
 	gnutls_x509_privkey_t root_privkey;
 	gnutls_x509_crt_t root_cert;
 	gnutls_x509_privkey_t host_privkey;
@@ -598,21 +657,21 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 
 	/* generate certificates */
 	gnutls_x509_crt_set_key(root_cert, root_privkey);
-	gnutls_x509_crt_set_serial(root_cert, "\x00", 1);
+	gnutls_x509_crt_set_serial(root_cert, "\x01", 1);
 	gnutls_x509_crt_set_version(root_cert, 3);
 	gnutls_x509_crt_set_ca_status(root_cert, 1);
 	gnutls_x509_crt_set_activation_time(root_cert, time(NULL));
 	gnutls_x509_crt_set_expiration_time(root_cert, time(NULL) + (60 * 60 * 24 * 365 * 10));
-	gnutls_x509_crt_sign(root_cert, root_cert, root_privkey);
+	gnutls_x509_crt_sign2(root_cert, root_cert, root_privkey, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? GNUTLS_DIG_SHA1 : GNUTLS_DIG_SHA256, 0);
 
 	gnutls_x509_crt_set_key(host_cert, host_privkey);
-	gnutls_x509_crt_set_serial(host_cert, "\x00", 1);
+	gnutls_x509_crt_set_serial(host_cert, "\x01", 1);
 	gnutls_x509_crt_set_version(host_cert, 3);
 	gnutls_x509_crt_set_ca_status(host_cert, 0);
 	gnutls_x509_crt_set_key_usage(host_cert, GNUTLS_KEY_KEY_ENCIPHERMENT | GNUTLS_KEY_DIGITAL_SIGNATURE);
 	gnutls_x509_crt_set_activation_time(host_cert, time(NULL));
 	gnutls_x509_crt_set_expiration_time(host_cert, time(NULL) + (60 * 60 * 24 * 365 * 10));
-	gnutls_x509_crt_sign(host_cert, root_cert, root_privkey);
+	gnutls_x509_crt_sign2(host_cert, root_cert, root_privkey, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? GNUTLS_DIG_SHA1 : GNUTLS_DIG_SHA256, 0);
 
 	/* export to PEM format */
 	size_t root_key_export_size = 0;
@@ -703,24 +762,24 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 		if (GNUTLS_E_SUCCESS == gnutls_error) {
 			/* now generate device certificate */
 			gnutls_x509_crt_set_key(dev_cert, fake_privkey);
-			gnutls_x509_crt_set_serial(dev_cert, "\x00", 1);
+			gnutls_x509_crt_set_serial(dev_cert, "\x01", 1);
 			gnutls_x509_crt_set_version(dev_cert, 3);
 			gnutls_x509_crt_set_ca_status(dev_cert, 0);
 			gnutls_x509_crt_set_activation_time(dev_cert, time(NULL));
 			gnutls_x509_crt_set_expiration_time(dev_cert, time(NULL) + (60 * 60 * 24 * 365 * 10));
 
 			/* use custom hash generation for compatibility with the "Apple ecosystem" */
-			const gnutls_digest_algorithm_t dig_sha1 = GNUTLS_DIG_SHA1;
-			size_t hash_size = gnutls_hash_get_len(dig_sha1);
+			const gnutls_digest_algorithm_t dig_sha = (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? GNUTLS_DIG_SHA1 : GNUTLS_DIG_SHA256;
+			size_t hash_size = gnutls_hash_get_len(dig_sha);
 			unsigned char hash[hash_size];
-			if (gnutls_hash_fast(dig_sha1, der_pub_key.data, der_pub_key.size, (unsigned char*)&hash) < 0) {
-				debug_info("ERROR: Failed to generate SHA1 for public key");
+			if (gnutls_hash_fast(dig_sha, der_pub_key.data, der_pub_key.size, (unsigned char*)&hash) < 0) {
+				debug_info("ERROR: Failed to generate SHA for public key");
 			} else {
 				gnutls_x509_crt_set_subject_key_id(dev_cert, hash, hash_size);
 			}
 
 			gnutls_x509_crt_set_key_usage(dev_cert, GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT);
-			gnutls_error = gnutls_x509_crt_sign(dev_cert, root_cert, root_privkey);
+			gnutls_error = gnutls_x509_crt_sign2(dev_cert, root_cert, root_privkey, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? GNUTLS_DIG_SHA1 : GNUTLS_DIG_SHA256, 0);
 			if (GNUTLS_E_SUCCESS == gnutls_error) {
 				/* if everything went well, export in PEM format */
 				size_t export_size = 0;
@@ -747,6 +806,211 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
 	gnutls_free(exponent.data);
 
 	gnutls_free(der_pub_key.data);
+#elif defined(HAVE_MBEDTLS)
+	time_t now = time(NULL);
+	struct tm* timestamp = gmtime(&now);
+	char notbefore[16];
+	strftime(notbefore, sizeof(notbefore), "%Y%m%d%H%M%S", timestamp);
+	time_t then = now + 60 * 60 * 24 * 365 * 10;
+	char notafter[16];
+	timestamp = gmtime(&then);
+	strftime(notafter, sizeof(notafter), "%Y%m%d%H%M%S", timestamp);
+
+	mbedtls_mpi sn;
+	mbedtls_mpi_init(&sn);
+	mbedtls_mpi_lset(&sn, 1); /* 0 doesn't work, so we have to use 1 (like GnuTLS) */
+
+	mbedtls_ctr_drbg_context ctr_drbg;
+	mbedtls_ctr_drbg_init(&ctr_drbg);
+
+	mbedtls_pk_context root_pkey;
+	mbedtls_pk_init(&root_pkey);
+
+	mbedtls_pk_context host_pkey;
+	mbedtls_pk_init(&host_pkey);
+
+	mbedtls_pk_context dev_public_key;
+	mbedtls_pk_init(&dev_public_key);
+
+	mbedtls_entropy_context entropy;
+	mbedtls_entropy_init(&entropy);
+
+	mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)"limd", 4);
+
+	/* ----- root key & cert ----- */
+	ret = mbedtls_pk_setup(&root_pkey, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
+	if (ret != 0) {
+		debug_info("mbedtls_pk_setup returned -0x%04x", -ret);
+		goto cleanup;
+	}
+
+	ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(root_pkey), mbedtls_ctr_drbg_random, &ctr_drbg, 2048, 65537);
+	if (ret != 0) {
+		debug_info("mbedtls_rsa_gen_key returned -0x%04x", -ret);
+		goto cleanup;
+	}
+
+	mbedtls_x509write_cert cert;
+	mbedtls_x509write_crt_init(&cert);
+
+	/* set serial number */
+	mbedtls_x509write_crt_set_serial(&cert, &sn);
+
+	/* set version */
+	mbedtls_x509write_crt_set_version(&cert, 2);
+
+	/* set x509v3 basic constraints */
+	_mbedtls_x509write_crt_set_basic_constraints_critical(&cert, 1, -1);
+
+	/* use root public key for root cert */
+	mbedtls_x509write_crt_set_subject_key(&cert, &root_pkey);
+
+	/* set x509v3 subject key identifier */
+	mbedtls_x509write_crt_set_subject_key_identifier(&cert);
+
+	/* set key validity */
+	mbedtls_x509write_crt_set_validity(&cert, notbefore, notafter);
+
+	/* sign root cert with root private key */
+	mbedtls_x509write_crt_set_issuer_key(&cert, &root_pkey);
+	mbedtls_x509write_crt_set_md_alg(&cert, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? MBEDTLS_MD_SHA1 : MBEDTLS_MD_SHA256);
+
+	unsigned char outbuf[16384];
+
+	/* write root private key */
+	mbedtls_pk_write_key_pem(&root_pkey, outbuf, sizeof(outbuf));
+	root_key_pem.size = strlen((const char*)outbuf);
+	root_key_pem.data = malloc(root_key_pem.size+1);
+	memcpy(root_key_pem.data, outbuf, root_key_pem.size);
+	root_key_pem.data[root_key_pem.size] = '\0';
+
+	/* write root certificate */
+	mbedtls_x509write_crt_pem(&cert, outbuf, sizeof(outbuf), mbedtls_ctr_drbg_random, &ctr_drbg);
+	root_cert_pem.size = strlen((const char*)outbuf);
+	root_cert_pem.data = malloc(root_cert_pem.size+1);
+	memcpy(root_cert_pem.data, outbuf, root_cert_pem.size);
+	root_cert_pem.data[root_cert_pem.size] = '\0';
+
+	mbedtls_x509write_crt_free(&cert);
+
+
+	/* ----- host key & cert ----- */
+	ret = mbedtls_pk_setup(&host_pkey, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
+	if (ret != 0) {
+		debug_info("mbedtls_pk_setup returned -0x%04x", -ret);
+		goto cleanup;
+	}
+
+	ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(host_pkey), mbedtls_ctr_drbg_random, &ctr_drbg, 2048, 65537);
+	if (ret != 0) {
+		debug_info("mbedtls_rsa_gen_key returned -0x%04x", -ret);
+		goto cleanup;
+	}
+
+	mbedtls_x509write_crt_init(&cert);
+
+	/* set serial number */
+	mbedtls_x509write_crt_set_serial(&cert, &sn);
+
+	/* set version */
+	mbedtls_x509write_crt_set_version(&cert, 2);
+
+	/* set x509v3 basic constraints */
+	_mbedtls_x509write_crt_set_basic_constraints_critical(&cert, 0, -1);
+
+	/* use host public key for host cert */
+	mbedtls_x509write_crt_set_subject_key(&cert, &host_pkey);
+
+	/* set x509v3 subject key identifier */
+	mbedtls_x509write_crt_set_subject_key_identifier(&cert);
+
+	/* set x509v3 key usage */
+	mbedtls_x509write_crt_set_key_usage(&cert, MBEDTLS_X509_KU_DIGITAL_SIGNATURE | MBEDTLS_X509_KU_KEY_ENCIPHERMENT);
+
+	/* set key validity */
+	mbedtls_x509write_crt_set_validity(&cert, notbefore, notafter);
+
+	/* sign host cert with root private key */
+	mbedtls_x509write_crt_set_issuer_key(&cert, &root_pkey);
+	mbedtls_x509write_crt_set_md_alg(&cert, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? MBEDTLS_MD_SHA1 : MBEDTLS_MD_SHA256);
+
+	/* write host private key */
+	mbedtls_pk_write_key_pem(&host_pkey, outbuf, sizeof(outbuf));
+	host_key_pem.size = strlen((const char*)outbuf);
+	host_key_pem.data = malloc(host_key_pem.size+1);
+	memcpy(host_key_pem.data, outbuf, host_key_pem.size);
+	host_key_pem.data[host_key_pem.size] = '\0';
+
+	/* write host certificate */
+	mbedtls_x509write_crt_pem(&cert, outbuf, sizeof(outbuf), mbedtls_ctr_drbg_random, &ctr_drbg);
+	host_cert_pem.size = strlen((const char*)outbuf);
+	host_cert_pem.data = malloc(host_cert_pem.size+1);
+	memcpy(host_cert_pem.data, outbuf, host_cert_pem.size);
+	host_cert_pem.data[host_cert_pem.size] = '\0';
+
+	mbedtls_x509write_crt_free(&cert);
+
+
+	/* ----- device certificate ----- */
+	unsigned char* pubkey_data = malloc(public_key.size+1);
+	if (!pubkey_data) {
+		debug_info("malloc() failed\n");
+		goto cleanup;
+	}
+	memcpy(pubkey_data, public_key.data, public_key.size);
+	pubkey_data[public_key.size] = '\0';
+
+	int pr = mbedtls_pk_parse_public_key(&dev_public_key, pubkey_data, public_key.size+1);
+	free(pubkey_data);
+	if (pr != 0) {
+		debug_info("Failed to read device public key: -0x%x\n", -pr);
+		goto cleanup;
+	}
+
+	mbedtls_x509write_crt_init(&cert);
+
+	/* set serial number */
+	mbedtls_x509write_crt_set_serial(&cert, &sn);
+
+	/* set version */
+	mbedtls_x509write_crt_set_version(&cert, 2);
+
+	/* set x509v3 basic constraints */
+	_mbedtls_x509write_crt_set_basic_constraints_critical(&cert, 0, -1);
+
+	/* use root public key for dev cert subject key */
+	mbedtls_x509write_crt_set_subject_key(&cert, &dev_public_key);
+
+	/* set x509v3 subject key identifier */
+	mbedtls_x509write_crt_set_subject_key_identifier(&cert);
+
+	/* set x509v3 key usage */
+	mbedtls_x509write_crt_set_key_usage(&cert, MBEDTLS_X509_KU_DIGITAL_SIGNATURE | MBEDTLS_X509_KU_KEY_ENCIPHERMENT);
+
+	/* set key validity */
+	mbedtls_x509write_crt_set_validity(&cert, notbefore, notafter);
+
+	/* sign device certificate with root private key */
+	mbedtls_x509write_crt_set_issuer_key(&cert, &root_pkey);
+	mbedtls_x509write_crt_set_md_alg(&cert, (device_version < IDEVICE_DEVICE_VERSION(4,0,0)) ? MBEDTLS_MD_SHA1 : MBEDTLS_MD_SHA256);
+
+	/* write device certificate */
+	mbedtls_x509write_crt_pem(&cert, outbuf, sizeof(outbuf), mbedtls_ctr_drbg_random, &ctr_drbg);
+	dev_cert_pem.size = strlen((const char*)outbuf);
+	dev_cert_pem.data = malloc(dev_cert_pem.size+1);
+	memcpy(dev_cert_pem.data, outbuf, dev_cert_pem.size);
+	dev_cert_pem.data[dev_cert_pem.size] = '\0';
+
+	mbedtls_x509write_crt_free(&cert);
+
+	/* cleanup */
+cleanup:
+	mbedtls_mpi_free(&sn);
+	mbedtls_pk_free(&dev_public_key);
+	mbedtls_entropy_free(&entropy);
+	mbedtls_pk_free(&host_pkey);
+	mbedtls_pk_free(&root_pkey);
+	mbedtls_ctr_drbg_free(&ctr_drbg);
 #endif
 
 	/* make sure that we have all we need */
@@ -781,32 +1045,31 @@ userpref_error_t pair_record_generate_keys_and_certs(plist_t pair_record, key_da
  *
  * @return 1 if the key was successfully imported.
  */
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL) || defined(HAVE_MBEDTLS)
 userpref_error_t pair_record_import_key_with_name(plist_t pair_record, const char* name, key_data_t* key)
-#else
+#elif defined(HAVE_GNUTLS)
 userpref_error_t pair_record_import_key_with_name(plist_t pair_record, const char* name, gnutls_x509_privkey_t key)
 #endif
 {
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL) || defined(HAVE_MBEDTLS)
 	if (!key)
 		return USERPREF_E_SUCCESS;
 #endif
 	userpref_error_t ret = USERPREF_E_INVALID_CONF;
 
-#ifdef HAVE_OPENSSL
-		ret = pair_record_get_item_as_key_data(pair_record, name, key);
-#else
-		key_data_t pem = { NULL, 0 };
-		ret = pair_record_get_item_as_key_data(pair_record, name, &pem);
-		if (ret == USERPREF_E_SUCCESS && GNUTLS_E_SUCCESS == gnutls_x509_privkey_import(key, &pem, GNUTLS_X509_FMT_PEM))
-			ret = USERPREF_E_SUCCESS;
-		else
-			ret = USERPREF_E_SSL_ERROR;
+#if defined(HAVE_OPENSSL) || defined(HAVE_MBEDTLS)
+	ret = pair_record_get_item_as_key_data(pair_record, name, key);
+#elif defined(HAVE_GNUTLS)
+	key_data_t pem = { NULL, 0 };
+	ret = pair_record_get_item_as_key_data(pair_record, name, &pem);
+	if (ret == USERPREF_E_SUCCESS && GNUTLS_E_SUCCESS == gnutls_x509_privkey_import(key, &pem, GNUTLS_X509_FMT_PEM))
+		ret = USERPREF_E_SUCCESS;
+	else
+		ret = USERPREF_E_SSL_ERROR;
 
-		if (pem.data)
-			free(pem.data);
+	if (pem.data)
+		free(pem.data);
 #endif
-
 	return ret;
 }
 
@@ -818,32 +1081,31 @@ userpref_error_t pair_record_import_key_with_name(plist_t pair_record, const cha
  *
  * @return IDEVICE_E_SUCCESS if the certificate was successfully imported.
  */
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL) || defined(HAVE_MBEDTLS)
 userpref_error_t pair_record_import_crt_with_name(plist_t pair_record, const char* name, key_data_t* cert)
 #else
 userpref_error_t pair_record_import_crt_with_name(plist_t pair_record, const char* name, gnutls_x509_crt_t cert)
 #endif
 {
-#ifdef HAVE_OPENSSL
+#if defined(HAVE_OPENSSL) || defined(HAVE_MBEDTLS)
 	if (!cert)
 		return USERPREF_E_SUCCESS;
 #endif
 	userpref_error_t ret = USERPREF_E_INVALID_CONF;
 
-#ifdef HAVE_OPENSSL
-		ret = pair_record_get_item_as_key_data(pair_record, name, cert);
-#else
-		key_data_t pem = { NULL, 0 };
-		ret = pair_record_get_item_as_key_data(pair_record, name, &pem);
-		if (ret == USERPREF_E_SUCCESS && GNUTLS_E_SUCCESS == gnutls_x509_crt_import(cert, &pem, GNUTLS_X509_FMT_PEM))
-			ret = USERPREF_E_SUCCESS;
-		else
-			ret = USERPREF_E_SSL_ERROR;
+#if defined(HAVE_OPENSSL) || defined(HAVE_MBEDTLS)
+	ret = pair_record_get_item_as_key_data(pair_record, name, cert);
+#elif defined(HAVE_GNUTLS)
+	key_data_t pem = { NULL, 0 };
+	ret = pair_record_get_item_as_key_data(pair_record, name, &pem);
+	if (ret == USERPREF_E_SUCCESS && GNUTLS_E_SUCCESS == gnutls_x509_crt_import(cert, &pem, GNUTLS_X509_FMT_PEM))
+		ret = USERPREF_E_SUCCESS;
+	else
+		ret = USERPREF_E_SSL_ERROR;
 
-		if (pem.data)
-			free(pem.data);
+	if (pem.data)
+		free(pem.data);
 #endif
-
 	return ret;
 }
 
@@ -878,9 +1140,10 @@ userpref_error_t pair_record_get_item_as_key_data(plist_t pair_record, const cha
 
 	if (node && plist_get_node_type(node) == PLIST_DATA) {
 		plist_get_data_val(node, &buffer, &length);
-		value->data = (unsigned char*)malloc(length);
+		value->data = (unsigned char*)malloc(length+1);
 		memcpy(value->data, buffer, length);
-		value->size = length;
+		value->data[length] = '\0';
+		value->size = length+1;
 		free(buffer);
 		buffer = NULL;
 	} else {

@@ -23,14 +23,15 @@
 #ifndef __INSTALLATION_PROXY_H
 #define __INSTALLATION_PROXY_H
 
+#include "idevice.h"
 #include "libimobiledevice/installation_proxy.h"
 #include "property_list_service.h"
-#include "common/thread.h"
+#include <libimobiledevice-glue/thread.h>
 
 struct instproxy_client_private {
 	property_list_service_client_t parent;
 	mutex_t mutex;
-	thread_t receive_status_thread;
+	THREAD_T receive_status_thread;
 };
 
 #endif

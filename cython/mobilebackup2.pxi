@@ -8,9 +8,11 @@ cdef extern from "libimobiledevice/mobilebackup2.h":
         MOBILEBACKUP2_E_INVALID_ARG = -1
         MOBILEBACKUP2_E_PLIST_ERROR = -2
         MOBILEBACKUP2_E_MUX_ERROR = -3
-        MOBILEBACKUP2_E_BAD_VERSION = -4
-        MOBILEBACKUP2_E_REPLY_NOT_OK = -5
-        MOBILEBACKUP2_E_NO_COMMON_VERSION = -6
+        MOBILEBACKUP2_E_SSL_ERROR = -4
+        MOBILEBACKUP2_E_RECEIVE_TIMEOUT = -5
+        MOBILEBACKUP2_E_BAD_VERSION = -6
+        MOBILEBACKUP2_E_REPLY_NOT_OK = -7
+        MOBILEBACKUP2_E_NO_COMMON_VERSION = -8
         MOBILEBACKUP2_E_UNKNOWN_ERROR = -256
 
     mobilebackup2_error_t mobilebackup2_client_new(idevice_t device, lockdownd_service_descriptor_t descriptor, mobilebackup2_client_t * client)
@@ -31,6 +33,8 @@ cdef class MobileBackup2Error(BaseError):
             MOBILEBACKUP2_E_INVALID_ARG: "Invalid argument",
             MOBILEBACKUP2_E_PLIST_ERROR: "Property list error",
             MOBILEBACKUP2_E_MUX_ERROR: "MUX error",
+            MOBILEBACKUP2_E_SSL_ERROR: "SSL error",
+            MOBILEBACKUP2_E_RECEIVE_TIMEOUT: "Receive timeout",
             MOBILEBACKUP2_E_BAD_VERSION: "Bad version",
             MOBILEBACKUP2_E_REPLY_NOT_OK: "Reply not OK",
             MOBILEBACKUP2_E_NO_COMMON_VERSION: "No common version",
@@ -54,10 +58,10 @@ cdef class MobileBackup2Client(PropertyListService):
     cdef inline BaseError _error(self, int16_t ret):
         return MobileBackup2Error(ret)
 
-    cdef send_message(self, bytes message, plist.Node options):
+    cpdef send_message(self, bytes message, plist.Node options):
         self.handle_error(mobilebackup2_send_message(self._c_client, message, options._c_node))
 
-    cdef tuple receive_message(self):
+    cpdef tuple receive_message(self):
         cdef:
             char* dlmessage = NULL
             plist.plist_t c_node = NULL
@@ -73,29 +77,34 @@ cdef class MobileBackup2Client(PropertyListService):
                 free(dlmessage)
             raise
 
-    cdef int send_raw(self, bytes data, int length):
+    cpdef int send_raw(self, bytes data, int length):
         cdef:
-            uint32_t bytes = 0
+            uint32_t bytes_recvd = 0
             mobilebackup2_error_t err
-        err = mobilebackup2_send_raw(self._c_client, data, length, &bytes)
+        err = mobilebackup2_send_raw(self._c_client, data, length, &bytes_recvd)
         try:
             self.handle_error(err)
-            return <bint>bytes
+            return <bint>bytes_recvd
         except BaseError, e:
             raise
 
-    cdef int receive_raw(self, bytes data, int length):
+    cpdef int receive_raw(self, bytearray data, int length):
         cdef:
-            uint32_t bytes = 0
+            uint32_t bytes_recvd = 0
             mobilebackup2_error_t err
-        err = mobilebackup2_receive_raw(self._c_client, data, length, &bytes)
+        err = mobilebackup2_receive_raw(self._c_client, data, length, &bytes_recvd)
+
+        # Throwing an exception when we test if theres more data to read is excessive
+        if err == -1 and bytes_recvd == 0:
+            return 0
+
         try:
             self.handle_error(err)
-            return <bint>bytes
+            return <bint>bytes_recvd
         except BaseError, e:
             raise
 
-    cdef float version_exchange(self, double[::1] local_versions):
+    cpdef float version_exchange(self, double[::1] local_versions):
         cdef:
             double[::1] temp = None
             double remote_version = 0.0
@@ -107,8 +116,8 @@ cdef class MobileBackup2Client(PropertyListService):
         except BaseError, e:
             raise
 
-    cdef send_request(self, bytes request, bytes target_identifier, bytes source_identifier, plist.Node options):
+    cpdef send_request(self, bytes request, bytes target_identifier, bytes source_identifier, plist.Node options):
         self.handle_error(mobilebackup2_send_request(self._c_client, request, target_identifier, source_identifier, options._c_node))
 
-    cdef send_status_response(self, int status_code, bytes status1, plist.Node status2):
+    cpdef send_status_response(self, int status_code, bytes status1, plist.Node status2):
         self.handle_error(mobilebackup2_send_status_response(self._c_client, status_code, status1, status2._c_node))

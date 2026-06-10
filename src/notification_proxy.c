@@ -19,16 +19,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
+
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
+
 #include <plist/plist.h>
 
 #include "notification_proxy.h"
 #include "property_list_service.h"
 #include "common/debug.h"
 
-#ifdef WIN32
+#ifdef _WIN32
+#include <windows.h>
 #define sleep(x) Sleep(x*1000)
 #endif
 
@@ -86,7 +94,7 @@ static np_error_t np_error(property_list_service_error_t err)
 	return NP_E_UNKNOWN_ERROR;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_client_new(idevice_t device, lockdownd_service_descriptor_t service, np_client_t *client)
+np_error_t np_client_new(idevice_t device, lockdownd_service_descriptor_t service, np_client_t *client)
 {
 	property_list_service_client_t plistclient = NULL;
 	np_error_t err = np_error(property_list_service_client_new(device, service, &plistclient));
@@ -98,20 +106,20 @@ LIBIMOBILEDEVICE_API np_error_t np_client_new(idevice_t device, lockdownd_servic
 	client_loc->parent = plistclient;
 
 	mutex_init(&client_loc->mutex);
-	client_loc->notifier = (thread_t)NULL;
+	client_loc->notifier = THREAD_T_NULL;
 
 	*client = client_loc;
 	return NP_E_SUCCESS;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_client_start_service(idevice_t device, np_client_t* client, const char* label)
+np_error_t np_client_start_service(idevice_t device, np_client_t* client, const char* label)
 {
-	np_error_t err = NP_E_UNKNOWN_ERROR;
+	int32_t err = NP_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, NP_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(np_client_new), &err);
 	return err;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_client_free(np_client_t client)
+np_error_t np_client_free(np_client_t client)
 {
 	plist_t dict;
 	property_list_service_client_t parent;
@@ -132,7 +140,7 @@ LIBIMOBILEDEVICE_API np_error_t np_client_free(np_client_t client)
 		debug_info("joining np callback");
 		thread_join(client->notifier);
 		thread_free(client->notifier);
-		client->notifier = (thread_t)NULL;
+		client->notifier = THREAD_T_NULL;
 	} else {
 		dict = NULL;
 		property_list_service_receive_plist(parent, &dict);
@@ -165,7 +173,7 @@ LIBIMOBILEDEVICE_API np_error_t np_client_free(np_client_t client)
 	return NP_E_SUCCESS;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_post_notification(np_client_t client, const char *notification)
+np_error_t np_post_notification(np_client_t client, const char *notification)
 {
 	if (!client || !notification) {
 		return NP_E_INVALID_ARG;
@@ -186,13 +194,8 @@ LIBIMOBILEDEVICE_API np_error_t np_post_notification(np_client_t client, const c
 	return res;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_observe_notification( np_client_t client, const char *notification )
+static np_error_t internal_np_observe_notification(np_client_t client, const char *notification)
 {
-	if (!client || !notification) {
-		return NP_E_INVALID_ARG;
-	}
-	np_lock(client);
-
 	plist_t dict = plist_new_dict();
 	plist_dict_set_item(dict,"Command", plist_new_string("ObserveNotification"));
 	plist_dict_set_item(dict,"Name", plist_new_string(notification));
@@ -203,11 +206,21 @@ LIBIMOBILEDEVICE_API np_error_t np_observe_notification( np_client_t client, con
 	}
 	plist_free(dict);
 
+	return res;
+}
+
+np_error_t np_observe_notification( np_client_t client, const char *notification )
+{
+	if (!client || !notification) {
+		return NP_E_INVALID_ARG;
+	}
+	np_lock(client);
+	np_error_t res = internal_np_observe_notification(client, notification);
 	np_unlock(client);
 	return res;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_observe_notifications(np_client_t client, const char **notification_spec)
+np_error_t np_observe_notifications(np_client_t client, const char **notification_spec)
 {
 	int i = 0;
 	np_error_t res = NP_E_UNKNOWN_ERROR;
@@ -221,13 +234,15 @@ LIBIMOBILEDEVICE_API np_error_t np_observe_notifications(np_client_t client, con
 		return NP_E_INVALID_ARG;
 	}
 
+	np_lock(client);
 	while (notifications[i]) {
-		res = np_observe_notification(client, notifications[i]);
+		res = internal_np_observe_notification(client, notifications[i]);
 		if (res != NP_E_SUCCESS) {
 			break;
 		}
 		i++;
 	}
+	np_unlock(client);
 
 	return res;
 }
@@ -240,7 +255,7 @@ LIBIMOBILEDEVICE_API np_error_t np_observe_notifications(np_client_t client, con
  *  with the notification that has been received.
  *
  * @return 0 if a notification has been received or nothing has been received,
- *         or a negative value if an error occured.
+ *         or a negative value if an error occurred.
  *
  * @note You probably want to check out np_set_notify_callback
  * @see np_set_notify_callback
@@ -260,7 +275,7 @@ static int np_get_notification(np_client_t client, char **notification)
 		debug_info("NotificationProxy: no notification received!");
 		res = 0;
 	} else if (perr != PROPERTY_LIST_SERVICE_E_SUCCESS) {
-		debug_info("NotificationProxy: error %d occured!", perr);
+		debug_info("NotificationProxy: error %d occurred!", perr);
 		res = perr;
 	}
 	if (dict) {
@@ -336,7 +351,7 @@ void* np_notifier( void* arg )
 	return NULL;
 }
 
-LIBIMOBILEDEVICE_API np_error_t np_set_notify_callback( np_client_t client, np_notify_cb_t notify_cb, void *user_data )
+np_error_t np_set_notify_callback( np_client_t client, np_notify_cb_t notify_cb, void *user_data )
 {
 	if (!client)
 		return NP_E_INVALID_ARG;
@@ -350,7 +365,7 @@ LIBIMOBILEDEVICE_API np_error_t np_set_notify_callback( np_client_t client, np_n
 		client->parent = NULL;
 		thread_join(client->notifier);
 		thread_free(client->notifier);
-		client->notifier = (thread_t)NULL;
+		client->notifier = THREAD_T_NULL;
 		client->parent = parent;
 	}
 

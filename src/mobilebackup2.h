@@ -2,7 +2,7 @@
  * mobilebackup2.h
  * Definitions for the mobilebackup2 service (iOS4+)
  *
- * Copyright (c) 2010 Nikias Bassen All Rights Reserved.
+ * Copyright (c) 2010-2019 Nikias Bassen, All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -22,6 +22,7 @@
 #ifndef __MOBILEBACKUP2_H
 #define __MOBILEBACKUP2_H
 
+#include "idevice.h"
 #include "libimobiledevice/mobilebackup2.h"
 #include "device_link_service.h"
 

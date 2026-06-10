@@ -2,7 +2,7 @@
  * screenshotr.c
  * com.apple.mobile.screenshotr service implementation.
  *
- * Copyright (c) 2010 Nikias Bassen All Rights Reserved.
+ * Copyright (c) 2010-2019 Nikias Bassen, All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -19,6 +19,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <plist/plist.h>
 #include <string.h>
 #include <stdlib.h>
@@ -27,7 +30,7 @@
 #include "device_link_service.h"
 #include "common/debug.h"
 
-#define SCREENSHOTR_VERSION_INT1 300
+#define SCREENSHOTR_VERSION_INT1 400
 #define SCREENSHOTR_VERSION_INT2 0
 
 /**
@@ -50,6 +53,10 @@ static screenshotr_error_t screenshotr_error(device_link_service_error_t err)
 			return SCREENSHOTR_E_PLIST_ERROR;
 		case DEVICE_LINK_SERVICE_E_MUX_ERROR:
 			return SCREENSHOTR_E_MUX_ERROR;
+		case DEVICE_LINK_SERVICE_E_SSL_ERROR:
+			return SCREENSHOTR_E_SSL_ERROR;
+		case DEVICE_LINK_SERVICE_E_RECEIVE_TIMEOUT:
+			return SCREENSHOTR_E_RECEIVE_TIMEOUT;
 		case DEVICE_LINK_SERVICE_E_BAD_VERSION:
 			return SCREENSHOTR_E_BAD_VERSION;
 		default:
@@ -58,7 +65,7 @@ static screenshotr_error_t screenshotr_error(device_link_service_error_t err)
 	return SCREENSHOTR_E_UNKNOWN_ERROR;
 }
 
-LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_new(idevice_t device, lockdownd_service_descriptor_t service,
+screenshotr_error_t screenshotr_client_new(idevice_t device, lockdownd_service_descriptor_t service,
 					   screenshotr_client_t * client)
 {
 	if (!device || !service || service->port == 0 || !client || *client)
@@ -86,14 +93,14 @@ LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_new(idevice_t device
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_start_service(idevice_t device, screenshotr_client_t * client, const char* label)
+screenshotr_error_t screenshotr_client_start_service(idevice_t device, screenshotr_client_t * client, const char* label)
 {
 	screenshotr_error_t err = SCREENSHOTR_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, SCREENSHOTR_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(screenshotr_client_new), &err);
 	return err;
 }
 
-LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_free(screenshotr_client_t client)
+screenshotr_error_t screenshotr_client_free(screenshotr_client_t client)
 {
 	if (!client)
 		return SCREENSHOTR_E_INVALID_ARG;
@@ -103,7 +110,7 @@ LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_free(screenshotr_cli
 	return err;
 }
 
-LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_take_screenshot(screenshotr_client_t client, char **imgdata, uint64_t *imgsize)
+screenshotr_error_t screenshotr_take_screenshot(screenshotr_client_t client, char **imgdata, uint64_t *imgsize)
 {
 	if (!client || !client->parent || !imgdata)
 		return SCREENSHOTR_E_INVALID_ARG;
@@ -135,7 +142,7 @@ LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_take_screenshot(screenshotr
 	plist_t node = plist_dict_get_item(dict, "MessageType");
 	char *strval = NULL;
 	plist_get_string_val(node, &strval);
-	if (!strval || strcmp(strval, "ScreenShotReply")) {
+	if (!strval || strcmp(strval, "ScreenShotReply") != 0) {
 		debug_info("invalid screenshot data received!");
 		res = SCREENSHOTR_E_PLIST_ERROR;
 		goto leave;

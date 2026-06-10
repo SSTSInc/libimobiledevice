@@ -18,6 +18,10 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include "mobileactivation.h"
@@ -50,7 +54,7 @@ static mobileactivation_error_t mobileactivation_error(property_list_service_err
 	return MOBILEACTIVATION_E_UNKNOWN_ERROR;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_client_new(idevice_t device, lockdownd_service_descriptor_t service, mobileactivation_client_t *client)
+mobileactivation_error_t mobileactivation_client_new(idevice_t device, lockdownd_service_descriptor_t service, mobileactivation_client_t *client)
 {
 	if (!device || !service || service->port == 0 || !client || *client) {
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -70,14 +74,14 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_client_new(idevic
 	return MOBILEACTIVATION_E_SUCCESS;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_client_start_service(idevice_t device, mobileactivation_client_t * client, const char* label)
+mobileactivation_error_t mobileactivation_client_start_service(idevice_t device, mobileactivation_client_t * client, const char* label)
 {
 	mobileactivation_error_t err = MOBILEACTIVATION_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, MOBILEACTIVATION_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(mobileactivation_client_new), &err);
 	return err;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_client_free(mobileactivation_client_t client)
+mobileactivation_error_t mobileactivation_client_free(mobileactivation_client_t client)
 {
 	if (!client)
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -91,6 +95,9 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_client_free(mobil
 
 static plist_t plist_data_from_plist(plist_t plist)
 {
+	if (plist && plist_get_node_type(plist) == PLIST_DATA) {
+		return plist_copy(plist);
+	}
 	plist_t result = NULL;
 	char *xml = NULL;
 	uint32_t xml_len = 0;
@@ -102,8 +109,6 @@ static plist_t plist_data_from_plist(plist_t plist)
 
 static mobileactivation_error_t mobileactivation_check_result(plist_t dict, const char *command)
 {
-	mobileactivation_error_t ret = MOBILEACTIVATION_E_UNKNOWN_ERROR;
-
 	if (!dict || plist_get_node_type(dict) != PLIST_DICT) {
 		return MOBILEACTIVATION_E_PLIST_ERROR;
 	}
@@ -111,13 +116,44 @@ static mobileactivation_error_t mobileactivation_check_result(plist_t dict, cons
 	plist_t err_node = plist_dict_get_item(dict, "Error");
 	if (!err_node) {
 		return MOBILEACTIVATION_E_SUCCESS;
-	} else {
-		char *errmsg = NULL;
-		plist_get_string_val(err_node, &errmsg);
-		debug_info("ERROR: %s: %s", command, errmsg);
-		ret = MOBILEACTIVATION_E_REQUEST_FAILED;
-		free(errmsg);
 	}
+
+	char *errmsg = NULL;
+	plist_get_string_val(err_node, &errmsg);
+	debug_info("ERROR: %s: %s", command, errmsg);
+	free(errmsg);
+	return MOBILEACTIVATION_E_REQUEST_FAILED;
+}
+
+static mobileactivation_error_t mobileactivation_send_command_plist(mobileactivation_client_t client, plist_t command, plist_t *result)
+{
+	if (!client || !command)
+		return MOBILEACTIVATION_E_INVALID_ARG;
+
+	plist_t cmd = plist_dict_get_item(command, "Command");
+	char* command_str = NULL;
+	if (cmd) {
+		plist_get_string_val(cmd, &command_str);
+	}
+	if (!command_str)
+		return MOBILEACTIVATION_E_INVALID_ARG;
+
+	mobileactivation_error_t ret = MOBILEACTIVATION_E_UNKNOWN_ERROR;
+	*result = NULL;
+
+	ret = mobileactivation_error(property_list_service_send_binary_plist(client->parent, command));
+
+	plist_t dict = NULL;
+	ret = mobileactivation_error(property_list_service_receive_plist(client->parent, &dict));
+	if (!dict) {
+		debug_info("ERROR: Did not get reply for %s command", command_str);
+		free(command_str);
+		return MOBILEACTIVATION_E_PLIST_ERROR;
+	}
+
+	*result = dict;
+	ret = mobileactivation_check_result(dict, command_str);
+	free(command_str);
 	return ret;
 }
 
@@ -135,21 +171,12 @@ static mobileactivation_error_t mobileactivation_send_command(mobileactivation_c
 		plist_dict_set_item(dict, "Value", plist_copy(value));
 	}
 
-	ret = mobileactivation_error(property_list_service_send_binary_plist(client->parent, dict));
+	ret = mobileactivation_send_command_plist(client, dict, result);
 	plist_free(dict);
-	dict = NULL;
-
-	ret = mobileactivation_error(property_list_service_receive_plist(client->parent, &dict));
-	if (!dict) {
-		debug_info("ERROR: Did not get reply for %s command", command);
-		return MOBILEACTIVATION_E_PLIST_ERROR;
-	}
-
-	*result = dict;
-	return mobileactivation_check_result(dict, command);
+	return ret;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_get_activation_state(mobileactivation_client_t client, plist_t *state)
+mobileactivation_error_t mobileactivation_get_activation_state(mobileactivation_client_t client, plist_t *state)
 {
 	if (!client || !state)
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -171,7 +198,7 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_get_activation_st
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_create_activation_session_info(mobileactivation_client_t client, plist_t *blob)
+mobileactivation_error_t mobileactivation_create_activation_session_info(mobileactivation_client_t client, plist_t *blob)
 {
 	if (!client || !blob)
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -191,7 +218,7 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_create_activation
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_create_activation_info(mobileactivation_client_t client, plist_t *info)
+mobileactivation_error_t mobileactivation_create_activation_info(mobileactivation_client_t client, plist_t *info)
 {
 	if (!client || !info)
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -213,7 +240,7 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_create_activation
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_create_activation_info_with_session(mobileactivation_client_t client, plist_t handshake_response, plist_t *info)
+mobileactivation_error_t mobileactivation_create_activation_info_with_session(mobileactivation_client_t client, plist_t handshake_response, plist_t *info)
 {
 	if (!client || !info)
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -234,10 +261,10 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_create_activation
 	plist_free(result);
 	result = NULL;
 
-	return ret;	
+	return ret;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_activate(mobileactivation_client_t client, plist_t activation_record)
+mobileactivation_error_t mobileactivation_activate(mobileactivation_client_t client, plist_t activation_record)
 {
 	if (!client || !activation_record)
 		return MOBILEACTIVATION_E_INVALID_ARG;
@@ -250,15 +277,22 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_activate(mobileac
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_activate_with_session(mobileactivation_client_t client, plist_t activation_record)
+mobileactivation_error_t mobileactivation_activate_with_session(mobileactivation_client_t client, plist_t activation_record, plist_t headers)
 {
 	if (!client || !activation_record)
 		return MOBILEACTIVATION_E_INVALID_ARG;
 
 	plist_t result = NULL;
-	plist_t data = plist_data_from_plist(activation_record);
-	mobileactivation_error_t ret = mobileactivation_send_command(client, "HandleActivationInfoWithSessionRequest", data, &result);
-	plist_free(data);
+
+	plist_t dict = plist_new_dict();
+	plist_dict_set_item(dict, "Command", plist_new_string("HandleActivationInfoWithSessionRequest"));
+	plist_dict_set_item(dict, "Value", plist_data_from_plist(activation_record));
+	if (headers) {
+		plist_dict_set_item(dict, "ActivationResponseHeaders", plist_copy(headers));
+	}
+
+	mobileactivation_error_t ret = mobileactivation_send_command_plist(client, dict, &result);
+	plist_free(dict);
 	plist_free(result);
 	result = NULL;
 
@@ -266,7 +300,7 @@ LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_activate_with_ses
 }
 
 
-LIBIMOBILEDEVICE_API mobileactivation_error_t mobileactivation_deactivate(mobileactivation_client_t client)
+mobileactivation_error_t mobileactivation_deactivate(mobileactivation_client_t client)
 {
 	if (!client)
 		return MOBILEACTIVATION_E_INVALID_ARG;

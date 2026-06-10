@@ -18,6 +18,10 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include "diagnostics_relay.h"
@@ -36,7 +40,7 @@
  *
  * @return RESULT_SUCCESS when the result is 'Success',
  *         RESULT_FAILURE when the result is 'Failure',
- *         or a negative value if an error occured during evaluation.
+ *         or a negative value if an error occurred during evaluation.
  */
 static int diagnostics_relay_check_result(plist_t dict)
 {
@@ -69,7 +73,7 @@ static int diagnostics_relay_check_result(plist_t dict)
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_client_new(idevice_t device, lockdownd_service_descriptor_t service, diagnostics_relay_client_t *client)
+diagnostics_relay_error_t diagnostics_relay_client_new(idevice_t device, lockdownd_service_descriptor_t service, diagnostics_relay_client_t *client)
 {
 	if (!device || !service || service->port == 0 || !client || *client) {
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -89,14 +93,14 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_client_new(idev
 	return DIAGNOSTICS_RELAY_E_SUCCESS;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_client_start_service(idevice_t device, diagnostics_relay_client_t * client, const char* label)
+diagnostics_relay_error_t diagnostics_relay_client_start_service(idevice_t device, diagnostics_relay_client_t * client, const char* label)
 {
 	diagnostics_relay_error_t err = DIAGNOSTICS_RELAY_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, DIAGNOSTICS_RELAY_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(diagnostics_relay_client_new), &err);
 	return err;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_client_free(diagnostics_relay_client_t client)
+diagnostics_relay_error_t diagnostics_relay_client_free(diagnostics_relay_client_t client)
 {
 	if (!client)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -163,7 +167,7 @@ static diagnostics_relay_error_t diagnostics_relay_send(diagnostics_relay_client
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_goodbye(diagnostics_relay_client_t client)
+diagnostics_relay_error_t diagnostics_relay_goodbye(diagnostics_relay_client_t client)
 {
 	if (!client)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -197,7 +201,7 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_goodbye(diagnos
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_sleep(diagnostics_relay_client_t client)
+diagnostics_relay_error_t diagnostics_relay_sleep(diagnostics_relay_client_t client)
 {
 	if (!client)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -229,7 +233,7 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_sleep(diagnosti
 	return ret;
 }
 
-static diagnostics_relay_error_t internal_diagnostics_relay_action(diagnostics_relay_client_t client, const char* name, int flags)
+static diagnostics_relay_error_t internal_diagnostics_relay_action(diagnostics_relay_client_t client, const char* name, diagnostics_relay_action_t flags)
 {
 	if (!client)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -273,17 +277,17 @@ static diagnostics_relay_error_t internal_diagnostics_relay_action(diagnostics_r
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_restart(diagnostics_relay_client_t client, int flags)
+diagnostics_relay_error_t diagnostics_relay_restart(diagnostics_relay_client_t client, diagnostics_relay_action_t flags)
 {
 	return internal_diagnostics_relay_action(client, "Restart", flags);
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_shutdown(diagnostics_relay_client_t client, int flags)
+diagnostics_relay_error_t diagnostics_relay_shutdown(diagnostics_relay_client_t client, diagnostics_relay_action_t flags)
 {
 	return internal_diagnostics_relay_action(client, "Shutdown", flags);
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_request_diagnostics(diagnostics_relay_client_t client, const char* type, plist_t* diagnostics)
+diagnostics_relay_error_t diagnostics_relay_request_diagnostics(diagnostics_relay_client_t client, const char* type, plist_t* diagnostics)
 {
 	if (!client || diagnostics == NULL)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -295,6 +299,9 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_request_diagnos
 	ret = diagnostics_relay_send(client, dict);
 	plist_free(dict);
 	dict = NULL;
+	if (ret != DIAGNOSTICS_RELAY_E_SUCCESS) {
+		return ret;
+	}
 
 	ret = diagnostics_relay_receive(client, &dict);
 	if (!dict) {
@@ -324,7 +331,7 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_request_diagnos
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_query_mobilegestalt(diagnostics_relay_client_t client, plist_t keys, plist_t* result)
+diagnostics_relay_error_t diagnostics_relay_query_mobilegestalt(diagnostics_relay_client_t client, plist_t keys, plist_t* result)
 {
 	if (!client || plist_get_node_type(keys) != PLIST_ARRAY || result == NULL)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
@@ -337,6 +344,9 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_query_mobileges
 	ret = diagnostics_relay_send(client, dict);
 	plist_free(dict);
 	dict = NULL;
+	if (ret != DIAGNOSTICS_RELAY_E_SUCCESS) {
+		return ret;
+	}
 
 	ret = diagnostics_relay_receive(client, &dict);
 	if (!dict) {
@@ -366,22 +376,25 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_query_mobileges
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_query_ioregistry_entry(diagnostics_relay_client_t client, const char* name, const char* class, plist_t* result)
+diagnostics_relay_error_t diagnostics_relay_query_ioregistry_entry(diagnostics_relay_client_t client, const char* entry_name, const char* entry_class, plist_t* result)
 {
-	if (!client || (name == NULL && class == NULL) || result == NULL)
+	if (!client || (entry_name == NULL && entry_class == NULL) || result == NULL)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;
 
 	diagnostics_relay_error_t ret = DIAGNOSTICS_RELAY_E_UNKNOWN_ERROR;
 
 	plist_t dict = plist_new_dict();
-	if (name)
-		plist_dict_set_item(dict,"EntryName", plist_new_string(name));
-	if (class)
-		plist_dict_set_item(dict,"EntryClass", plist_new_string(class));
+	if (entry_name)
+		plist_dict_set_item(dict,"EntryName", plist_new_string(entry_name));
+	if (entry_class)
+		plist_dict_set_item(dict,"EntryClass", plist_new_string(entry_class));
 	plist_dict_set_item(dict,"Request", plist_new_string("IORegistry"));
 	ret = diagnostics_relay_send(client, dict);
 	plist_free(dict);
 	dict = NULL;
+	if (ret != DIAGNOSTICS_RELAY_E_SUCCESS) {
+		return ret;
+	}
 
 	ret = diagnostics_relay_receive(client, &dict);
 	if (!dict) {
@@ -411,7 +424,7 @@ LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_query_ioregistr
 	return ret;
 }
 
-LIBIMOBILEDEVICE_API diagnostics_relay_error_t diagnostics_relay_query_ioregistry_plane(diagnostics_relay_client_t client, const char* plane, plist_t* result)
+diagnostics_relay_error_t diagnostics_relay_query_ioregistry_plane(diagnostics_relay_client_t client, const char* plane, plist_t* result)
 {
 	if (!client || plane == NULL || result == NULL)
 		return DIAGNOSTICS_RELAY_E_INVALID_ARG;

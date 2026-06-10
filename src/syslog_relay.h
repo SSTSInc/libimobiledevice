@@ -22,13 +22,14 @@
 #ifndef _SYSLOG_RELAY_H
 #define _SYSLOG_RELAY_H
 
+#include "idevice.h"
 #include "libimobiledevice/syslog_relay.h"
 #include "service.h"
-#include "common/thread.h"
+#include <libimobiledevice-glue/thread.h>
 
 struct syslog_relay_client_private {
 	service_client_t parent;
-	thread_t worker;
+	THREAD_T worker;
 };
 
 void *syslog_relay_worker(void *arg);

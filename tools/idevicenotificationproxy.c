@@ -2,7 +2,8 @@
  * idevicenotificationproxy.c
  * Simple client for the notification_proxy service
  *
- * Copyright (c) 2009-2015 Martin Szulecki All Rights Reserved.
+ * Copyright (c) 2018-2024 Nikias Bassen, All Rights Reserved.
+ * Copyright (c) 2009-2015 Martin Szulecki, All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -23,13 +24,16 @@
 #include <config.h>
 #endif
 
+#define TOOL_NAME "idevicenotificationproxy"
+
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <getopt.h>
 #include <errno.h>
 #include <signal.h>
-#include <stdlib.h>
 
-#ifdef WIN32
+#ifdef _WIN32
 #include <windows.h>
 #define sleep(x) Sleep(x*1000)
 #else
@@ -57,23 +61,30 @@ static void clean_exit(int sig)
 	quit_flag++;
 }
 
-static void print_usage(int argc, char **argv)
+static void print_usage(int argc, char **argv, int is_error)
 {
-	char *name = NULL;
-
-	name = strrchr(argv[0], '/');
-	printf("Usage: %s [OPTIONS] COMMAND\n", (name ? name + 1: argv[0]));
-	printf("Post or observe notifications on a device.\n\n");
-	printf(" Where COMMAND is one of:\n");
-	printf("  post ID [...]\t\tpost notification IDs to device and exit\n");
-	printf("  observe ID [...]\tobserve notification IDs in the foreground until CTRL+C or signal is received\n");
-	printf("\n");
-	printf(" The following OPTIONS are accepted:\n");
-	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
-	printf("  -h, --help\t\tprints usage information\n");
-	printf("\n");
-	printf("Homepage: <" PACKAGE_URL ">\n");
+	char *name = strrchr(argv[0], '/');
+	fprintf(is_error ? stderr : stdout, "Usage: %s [OPTIONS] COMMAND\n", (name ? name + 1: argv[0]));
+	fprintf(is_error ? stderr : stdout,
+		"\n"
+		"Post or observe notifications on a device.\n"
+		"\n"
+		"Where COMMAND is one of:\n"
+		"  post ID [...]         post notification IDs to device and exit\n"
+		"  observe ID [...]      observe notification IDs in foreground until CTRL+C\n"
+                "                        or signal is received\n"
+		"\n"
+		"The following OPTIONS are accepted:\n"
+		"  -u, --udid UDID       target specific device by UDID\n"
+		"  -i, --insecure        use insecure notification proxy (non-paired device)\n"
+		"  -n, --network         connect to network device\n"
+		"  -d, --debug           enable communication debugging\n"
+		"  -h, --help            prints usage information\n"
+		"  -v, --version         prints version information\n"
+		"\n"
+		"Homepage:    <" PACKAGE_URL ">\n"
+		"Bug Reports: <" PACKAGE_BUGREPORT ">\n"
+	);
 }
 
 static void notify_cb(const char *notification, void *user_data)
@@ -90,8 +101,10 @@ int main(int argc, char *argv[])
 	np_client_t gnp = NULL;
 
 	int result = -1;
-	int i;
+	int i = 0;
 	const char* udid = NULL;
+	int use_network = 0;
+	int insecure = 0;
 	int cmd = CMD_NONE;
 	char* cmd_arg = NULL;
 
@@ -99,96 +112,126 @@ int main(int argc, char *argv[])
 	char **nspec = NULL;
 	char **nspectmp = NULL;
 
+	int c = 0;
+	const struct option longopts[] = {
+		{ "debug", no_argument, NULL, 'd' },
+		{ "help", no_argument, NULL, 'h' },
+		{ "udid", required_argument, NULL, 'u' },
+		{ "insecure", no_argument, NULL, 'i' },
+		{ "network", no_argument, NULL, 'n' },
+		{ "version", no_argument, NULL, 'v' },
+		{ NULL, 0, NULL, 0}
+	};
+
 	signal(SIGINT, clean_exit);
 	signal(SIGTERM, clean_exit);
-#ifndef WIN32
+#ifndef _WIN32
 	signal(SIGQUIT, clean_exit);
 	signal(SIGPIPE, SIG_IGN);
 #endif
 
 	/* parse cmdline args */
-	for (i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-d") || !strcmp(argv[i], "--debug")) {
+	while ((c = getopt_long(argc, argv, "dhu:inv", longopts, NULL)) != -1) {
+		switch (c) {
+		case 'd':
 			idevice_set_debug_level(1);
-			continue;
-		}
-		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
-			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
-				print_usage(argc, argv);
-				result = 0;
-				goto cleanup;
+			break;
+		case 'u':
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: UDID argument must not be empty!\n");
+				print_usage(argc, argv, 1);
+				return 2;
 			}
-			udid = argv[i];
-			continue;
-		}
-		else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-			print_usage(argc, argv);
-			result = 0;
-			goto cleanup;
-		}
-		else if (!strcmp(argv[i], "post") || !strcmp(argv[i], "observe")) {
-			cmd = CMD_POST;
-			if (!strcmp(argv[i], "observe")) {
-				cmd = CMD_OBSERVE;
-			}
-
-			i++;
-
-			if (!argv[i] || argv[i] == NULL || (!strncmp(argv[i], "-", 1))) {
-				printf("Please supply a valid notification identifier.\n");
-				print_usage(argc, argv);
-				goto cleanup;
-			}
-
-			count = 0;
-			nspec = malloc(sizeof(char*) * (count+1));
-
-			while(1) {
-				if (argv[i] && (strlen(argv[i]) >= 2) && (strncmp(argv[i], "-", 1) != 0)) {
-					nspectmp = realloc(nspec, sizeof(char*) * (count+1));
-					nspectmp[count] = strdup(argv[i]);
-					nspec = nspectmp;
-					count = count+1;
-					i++;
-				} else {
-					i--;
-					break;
-				}
-			}
-
-			nspectmp = realloc(nspec, sizeof(char*) * (count+1));
-			nspectmp[count] = NULL;
-			nspec = nspectmp;
-			continue;
-		}
-		else {
-			print_usage(argc, argv);
+			udid = optarg;
+			break;
+		case 'n':
+			use_network = 1;
+			break;
+		case 'i':
+			insecure = 1;
+			break;
+		case 'h':
+			print_usage(argc, argv, 0);
 			return 0;
+		case 'v':
+			printf("%s %s\n", TOOL_NAME, PACKAGE_VERSION);
+			return 0;
+		default:
+			print_usage(argc, argv, 1);
+			return 2;
 		}
+	}
+	argc -= optind;
+	argv += optind;
+
+	if (!argv[i]) {
+		fprintf(stderr, "ERROR: Missing command\n");
+		print_usage(argc+optind, argv-optind, 1);
+		return 2;
+	}
+
+	if (!strcmp(argv[i], "post")) {
+		cmd = CMD_POST;
+	} else if (!strcmp(argv[i], "observe")) {
+		cmd = CMD_OBSERVE;
+	}
+
+	if (cmd == CMD_POST || cmd == CMD_OBSERVE) {
+		i++;
+		if (!argv[i]) {
+			fprintf(stderr, "ERROR: Please supply a valid notification identifier.\n");
+			print_usage(argc+optind, argv-optind, 1);
+			return 2;
+		}
+
+		count = 0;
+		nspec = malloc(sizeof(char*) * (count+1));
+
+		while(1) {
+			if (argv[i] && (strlen(argv[i]) >= 2) && (strncmp(argv[i], "-", 1) != 0)) {
+				nspectmp = realloc(nspec, sizeof(char*) * (count+1));
+				nspectmp[count] = strdup(argv[i]);
+				nspec = nspectmp;
+				count = count+1;
+				i++;
+			} else {
+				i--;
+				break;
+			}
+		}
+
+		nspectmp = realloc(nspec, sizeof(char*) * (count+1));
+		nspectmp[count] = NULL;
+		nspec = nspectmp;
 	}
 
 	/* verify options */
 	if (cmd == CMD_NONE) {
-		print_usage(argc, argv);
-		goto cleanup;
+		fprintf(stderr, "ERROR: Unsupported command '%s'\n", argv[0]);
+		print_usage(argc+optind, argv-optind, 1);
+		return 2;
 	}
 
-	if (IDEVICE_E_SUCCESS != idevice_new(&device, udid)) {
+	if (IDEVICE_E_SUCCESS != idevice_new_with_options(&device, udid, (use_network) ? IDEVICE_LOOKUP_NETWORK : IDEVICE_LOOKUP_USBMUX)) {
 		if (udid) {
-			printf("No device found with udid %s, is it plugged in?\n", udid);
+			printf("No device found with udid %s.\n", udid);
 		} else {
-			printf("No device found, is it plugged in?\n");
+			printf("No device found.\n");
 		}
 		goto cleanup;
 	}
 
-	if (LOCKDOWN_E_SUCCESS != (ret = lockdownd_client_new_with_handshake(device, &client, "idevicenotificationproxy"))) {
-		fprintf(stderr, "ERROR: Could not connect to lockdownd, error code %d\n", ret);
+	if (insecure) {
+		ret = lockdownd_client_new(device, &client, TOOL_NAME);
+	} else {
+		ret = lockdownd_client_new_with_handshake(device, &client, TOOL_NAME);
+	}
+	if (LOCKDOWN_E_SUCCESS != ret) {
+		fprintf(stderr, "ERROR: Could not connect to lockdownd: %s (%d)\n", lockdownd_strerror(ret), ret);
 		goto cleanup;
 	}
 
-	ret = lockdownd_start_service(client, NP_SERVICE_NAME, &service);
+	ret = lockdownd_start_service(client, (insecure) ? "com.apple.mobile.insecure_notification_proxy" : NP_SERVICE_NAME, &service);
 
 	lockdownd_client_free(client);
 
@@ -233,7 +276,7 @@ int main(int argc, char *argv[])
 			}
 		}
 	} else {
-		printf("Could not start notification_proxy service on device.\n");
+		printf("ERROR: Could not start service %s: %s\n", NP_SERVICE_NAME, lockdownd_strerror(ret));
 	}
 
 	if (service) {

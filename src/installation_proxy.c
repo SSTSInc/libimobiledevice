@@ -20,10 +20,17 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <inttypes.h>
+
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
+
 #include <plist/plist.h>
 
 #include "installation_proxy.h"
@@ -229,7 +236,7 @@ static instproxy_error_t instproxy_error(property_list_service_error_t err)
 	return INSTPROXY_E_UNKNOWN_ERROR;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_new(idevice_t device, lockdownd_service_descriptor_t service, instproxy_client_t *client)
+instproxy_error_t instproxy_client_new(idevice_t device, lockdownd_service_descriptor_t service, instproxy_client_t *client)
 {
 	property_list_service_client_t plistclient = NULL;
 	instproxy_error_t err = instproxy_error(property_list_service_client_new(device, service, &plistclient));
@@ -240,32 +247,33 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_new(idevice_t device, lo
 	instproxy_client_t client_loc = (instproxy_client_t) malloc(sizeof(struct instproxy_client_private));
 	client_loc->parent = plistclient;
 	mutex_init(&client_loc->mutex);
-	client_loc->receive_status_thread = (thread_t)NULL;
+	client_loc->receive_status_thread = THREAD_T_NULL;
 
 	*client = client_loc;
 	return INSTPROXY_E_SUCCESS;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_start_service(idevice_t device, instproxy_client_t * client, const char* label)
+instproxy_error_t instproxy_client_start_service(idevice_t device, instproxy_client_t * client, const char* label)
 {
-	instproxy_error_t err = INSTPROXY_E_UNKNOWN_ERROR;
+	int32_t err = INSTPROXY_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, INSTPROXY_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(instproxy_client_new), &err);
 	return err;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_free(instproxy_client_t client)
+instproxy_error_t instproxy_client_free(instproxy_client_t client)
 {
 	if (!client)
 		return INSTPROXY_E_INVALID_ARG;
 
-	property_list_service_client_free(client->parent);
+	property_list_service_client_t parent = client->parent;
 	client->parent = NULL;
 	if (client->receive_status_thread) {
 		debug_info("joining receive_status_thread");
 		thread_join(client->receive_status_thread);
 		thread_free(client->receive_status_thread);
-		client->receive_status_thread = (thread_t)NULL;
+		client->receive_status_thread = THREAD_T_NULL;
 	}
+	property_list_service_client_free(parent);
 	mutex_destroy(&client->mutex);
 	free(client);
 
@@ -278,12 +286,9 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_free(instproxy_client_t 
  *
  * @param client The connected installation_proxy client.
  * @param command The command to execute. Required.
- * @param client_options The client options to use, as PLIST_DICT, or NULL.
- * @param appid The ApplicationIdentifier to add or NULL if not required.
- * @param package_path The installation package path or NULL if not required.
  *
  * @return INSTPROXY_E_SUCCESS on success or an INSTPROXY_E_* error value if
- *     an error occured.
+ *     an error occurred.
  */
 static instproxy_error_t instproxy_send_command(instproxy_client_t client, plist_t command)
 {
@@ -343,7 +348,7 @@ static instproxy_error_t instproxy_receive_status_loop(instproxy_client_t client
 
 		/* parse status response */
 		if (node) {
-			/* check status for possible error to allow reporting it and aborting it gracefully */
+			/* check status for possible error to allow reporting it and aborting it gracefully */
 			res = instproxy_status_get_error(node, &error_name, &error_description, &error_code);
 			if (res != INSTPROXY_E_SUCCESS) {
 				debug_info("command: %s, error %d, code 0x%08"PRIx64", name: %s, description: \"%s\"", command_name, res, error_code, error_name, error_description ? error_description: "N/A");
@@ -363,17 +368,14 @@ static instproxy_error_t instproxy_receive_status_loop(instproxy_client_t client
 			/* check status from response */
 			instproxy_status_get_name(node, &status_name);
 			if (!status_name) {
-				debug_info("failed to retrieve name from status response with error %d.", res);
-				complete = 1;
-			}
-
-			if (status_name) {
+				debug_info("ignoring message without Status key:");
+				debug_plist(node);
+			} else {
 				if (!strcmp(status_name, "Complete")) {
 					complete = 1;
 				} else {
 					res = INSTPROXY_E_OP_IN_PROGRESS;
 				}
-
 #ifndef STRIP_DEBUG_CODE
 				percent_complete = -1;
 				instproxy_status_get_percent_complete(node, &percent_complete);
@@ -431,7 +433,7 @@ static void* instproxy_receive_status_loop_thread(void* arg)
 
 	if (data->client->receive_status_thread) {
 		thread_free(data->client->receive_status_thread);
-		data->client->receive_status_thread = (thread_t)NULL;
+		data->client->receive_status_thread = THREAD_T_NULL;
 	}
 
 	instproxy_unlock(data->client);
@@ -457,7 +459,7 @@ static void* instproxy_receive_status_loop_thread(void* arg)
  *
  * @return INSTPROXY_E_SUCCESS when the thread was created (async mode), or
  *         when the command completed successfully (sync).
- *         An INSTPROXY_E_* error value is returned if an error occured.
+ *         An INSTPROXY_E_* error value is returned if an error occurred.
  */
 static instproxy_error_t instproxy_receive_status_loop_with_callback(instproxy_client_t client, plist_t command, instproxy_command_type_t async, instproxy_status_cb_t status_cb, void *user_data)
 {
@@ -502,7 +504,7 @@ static instproxy_error_t instproxy_receive_status_loop_with_callback(instproxy_c
  * @param user_data Callback data passed to status_cb.
  *
  * @return INSTPROXY_E_SUCCESS on success or an INSTPROXY_E_* error value if
- *     an error occured.
+ *     an error occurred.
  */
 static instproxy_error_t instproxy_perform_command(instproxy_client_t client, plist_t command, instproxy_command_type_t async, instproxy_status_cb_t status_cb, void *user_data)
 {
@@ -527,7 +529,7 @@ static instproxy_error_t instproxy_perform_command(instproxy_client_t client, pl
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_browse_with_callback(instproxy_client_t client, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_browse_with_callback(instproxy_client_t client, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	if (!client || !client->parent || !status_cb)
 		return INSTPROXY_E_INVALID_ARG;
@@ -568,7 +570,7 @@ static void instproxy_append_current_list_to_result_cb(plist_t command, plist_t 
 		plist_free(current_list);
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_browse(instproxy_client_t client, plist_t client_options, plist_t *result)
+instproxy_error_t instproxy_browse(instproxy_client_t client, plist_t client_options, plist_t *result)
 {
 	if (!client || !client->parent || !result)
 		return INSTPROXY_E_INVALID_ARG;
@@ -605,7 +607,7 @@ static void instproxy_copy_lookup_result_cb(plist_t command, plist_t status, voi
 	}
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_lookup(instproxy_client_t client, const char** appids, plist_t client_options, plist_t *result)
+instproxy_error_t instproxy_lookup(instproxy_client_t client, const char** appids, plist_t client_options, plist_t *result)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 	int i = 0;
@@ -652,7 +654,7 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_lookup(instproxy_client_t clien
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_install(instproxy_client_t client, const char *pkg_path, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_install(instproxy_client_t client, const char *pkg_path, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -662,14 +664,14 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_install(instproxy_client_t clie
 		plist_dict_set_item(command, "ClientOptions", plist_copy(client_options));
 	plist_dict_set_item(command, "PackagePath", plist_new_string(pkg_path));
 
-	res = instproxy_perform_command(client, command, INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
+	res = instproxy_perform_command(client, command, status_cb == NULL ? INSTPROXY_COMMAND_TYPE_SYNC : INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
 
 	plist_free(command);
 
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_upgrade(instproxy_client_t client, const char *pkg_path, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_upgrade(instproxy_client_t client, const char *pkg_path, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -679,14 +681,14 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_upgrade(instproxy_client_t clie
 		plist_dict_set_item(command, "ClientOptions", plist_copy(client_options));
 	plist_dict_set_item(command, "PackagePath", plist_new_string(pkg_path));
 
-	res = instproxy_perform_command(client, command, INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
+	res = instproxy_perform_command(client, command, status_cb == NULL ? INSTPROXY_COMMAND_TYPE_SYNC : INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
 
 	plist_free(command);
 
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_uninstall(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_uninstall(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -696,14 +698,14 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_uninstall(instproxy_client_t cl
 		plist_dict_set_item(command, "ClientOptions", plist_copy(client_options));
 	plist_dict_set_item(command, "ApplicationIdentifier", plist_new_string(appid));
 
-	res = instproxy_perform_command(client, command, INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
+	res = instproxy_perform_command(client, command, status_cb == NULL ? INSTPROXY_COMMAND_TYPE_SYNC : INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
 
 	plist_free(command);
 
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_lookup_archives(instproxy_client_t client, plist_t client_options, plist_t *result)
+instproxy_error_t instproxy_lookup_archives(instproxy_client_t client, plist_t client_options, plist_t *result)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -719,7 +721,7 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_lookup_archives(instproxy_clien
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_archive(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_archive(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -729,14 +731,14 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_archive(instproxy_client_t clie
 		plist_dict_set_item(command, "ClientOptions", plist_copy(client_options));
 	plist_dict_set_item(command, "ApplicationIdentifier", plist_new_string(appid));
 
-	res = instproxy_perform_command(client, command, INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
+	res = instproxy_perform_command(client, command, status_cb == NULL ? INSTPROXY_COMMAND_TYPE_SYNC : INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
 
 	plist_free(command);
 
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_restore(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_restore(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -746,14 +748,14 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_restore(instproxy_client_t clie
 		plist_dict_set_item(command, "ClientOptions", plist_copy(client_options));
 	plist_dict_set_item(command, "ApplicationIdentifier", plist_new_string(appid));
 
-	res = instproxy_perform_command(client, command, INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
+	res = instproxy_perform_command(client, command, status_cb == NULL ? INSTPROXY_COMMAND_TYPE_SYNC : INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
 
 	plist_free(command);
 
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_remove_archive(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
+instproxy_error_t instproxy_remove_archive(instproxy_client_t client, const char *appid, plist_t client_options, instproxy_status_cb_t status_cb, void *user_data)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -763,14 +765,14 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_remove_archive(instproxy_client
 		plist_dict_set_item(command, "ClientOptions", plist_copy(client_options));
 	plist_dict_set_item(command, "ApplicationIdentifier", plist_new_string(appid));
 
-	res = instproxy_perform_command(client, command, INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
+	res = instproxy_perform_command(client, command, status_cb == NULL ? INSTPROXY_COMMAND_TYPE_SYNC : INSTPROXY_COMMAND_TYPE_ASYNC, status_cb, user_data);
 
 	plist_free(command);
 
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_check_capabilities_match(instproxy_client_t client, const char** capabilities, plist_t client_options, plist_t *result)
+instproxy_error_t instproxy_check_capabilities_match(instproxy_client_t client, const char** capabilities, plist_t client_options, plist_t *result)
 {
 	if (!client || !capabilities || !result)
 		return INSTPROXY_E_INVALID_ARG;
@@ -807,7 +809,7 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_check_capabilities_match(instpr
 	return res;
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_status_get_error(plist_t status, char **name, char** description, uint64_t* code)
+instproxy_error_t instproxy_status_get_error(plist_t status, char **name, char** description, uint64_t* code)
 {
 	instproxy_error_t res = INSTPROXY_E_UNKNOWN_ERROR;
 
@@ -845,7 +847,7 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_status_get_error(plist_t status
 	return res;
 }
 
-LIBIMOBILEDEVICE_API void instproxy_status_get_name(plist_t status, char **name)
+void instproxy_status_get_name(plist_t status, char **name)
 {
 	if (name) {
 		plist_t node = plist_dict_get_item(status, "Status");
@@ -857,7 +859,7 @@ LIBIMOBILEDEVICE_API void instproxy_status_get_name(plist_t status, char **name)
 	}
 }
 
-LIBIMOBILEDEVICE_API void instproxy_status_get_percent_complete(plist_t status, int *percent)
+void instproxy_status_get_percent_complete(plist_t status, int *percent)
 {
 	uint64_t val = 0;
 	if (percent) {
@@ -869,7 +871,7 @@ LIBIMOBILEDEVICE_API void instproxy_status_get_percent_complete(plist_t status, 
 	}
 }
 
-LIBIMOBILEDEVICE_API void instproxy_status_get_current_list(plist_t status, uint64_t* total, uint64_t* current_index, uint64_t* current_amount, plist_t* list)
+void instproxy_status_get_current_list(plist_t status, uint64_t* total, uint64_t* current_index, uint64_t* current_amount, plist_t* list)
 {
 	plist_t node = NULL;
 
@@ -906,7 +908,7 @@ LIBIMOBILEDEVICE_API void instproxy_status_get_current_list(plist_t status, uint
 	}
 }
 
-LIBIMOBILEDEVICE_API void instproxy_command_get_name(plist_t command, char** name)
+void instproxy_command_get_name(plist_t command, char** name)
 {
 	if (name) {
 		plist_t node = plist_dict_get_item(command, "Command");
@@ -918,12 +920,12 @@ LIBIMOBILEDEVICE_API void instproxy_command_get_name(plist_t command, char** nam
 	}
 }
 
-LIBIMOBILEDEVICE_API plist_t instproxy_client_options_new(void)
+plist_t instproxy_client_options_new(void)
 {
 	return plist_new_dict();
 }
 
-LIBIMOBILEDEVICE_API void instproxy_client_options_add(plist_t client_options, ...)
+void instproxy_client_options_add(plist_t client_options, ...)
 {
 	if (!client_options)
 		return;
@@ -936,7 +938,7 @@ LIBIMOBILEDEVICE_API void instproxy_client_options_add(plist_t client_options, .
 		if (!strcmp(key, "SkipUninstall")) {
 			int intval = va_arg(args, int);
 			plist_dict_set_item(client_options, key, plist_new_bool(intval));
-		} else if (!strcmp(key, "ApplicationSINF") || !strcmp(key, "iTunesMetadata") || !strcmp(key, "ReturnAttributes")) {
+		} else if (!strcmp(key, "ApplicationSINF") || !strcmp(key, "iTunesMetadata") || !strcmp(key, "ReturnAttributes") || !strcmp(key, "BundleIDs")) {
 			plist_t plistval = va_arg(args, plist_t);
 			if (!plistval) {
 				free(key);
@@ -957,7 +959,7 @@ LIBIMOBILEDEVICE_API void instproxy_client_options_add(plist_t client_options, .
 	va_end(args);
 }
 
-LIBIMOBILEDEVICE_API void instproxy_client_options_set_return_attributes(plist_t client_options, ...)
+void instproxy_client_options_set_return_attributes(plist_t client_options, ...)
 {
 	if (!client_options)
 		return;
@@ -978,16 +980,16 @@ LIBIMOBILEDEVICE_API void instproxy_client_options_set_return_attributes(plist_t
 	plist_dict_set_item(client_options, "ReturnAttributes", return_attributes);
 }
 
-LIBIMOBILEDEVICE_API void instproxy_client_options_free(plist_t client_options)
+void instproxy_client_options_free(plist_t client_options)
 {
 	if (client_options) {
 		plist_free(client_options);
 	}
 }
 
-LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_get_path_for_bundle_identifier(instproxy_client_t client, const char* appid, char** path)
+instproxy_error_t instproxy_client_get_path_for_bundle_identifier(instproxy_client_t client, const char* bundle_id, char** path)
 {
-	if (!client || !client->parent || !appid)
+	if (!client || !client->parent || !bundle_id)
 		return INSTPROXY_E_INVALID_ARG;
 
 	plist_t apps = NULL;
@@ -1000,7 +1002,7 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_get_path_for_bundle_iden
 	instproxy_client_options_set_return_attributes(client_opts, "CFBundleIdentifier", "CFBundleExecutable", "Path", NULL);
 
 	// only query for specific appid
-	const char* appids[] = {appid, NULL};
+	const char* appids[] = {bundle_id, NULL};
 
 	// query device for list of apps
 	instproxy_error_t ierr = instproxy_lookup(client, appids, client_opts, &apps);
@@ -1011,7 +1013,7 @@ LIBIMOBILEDEVICE_API instproxy_error_t instproxy_client_get_path_for_bundle_iden
 		return ierr;
 	}
 
-	plist_t app_found = plist_access_path(apps, 1, appid);
+	plist_t app_found = plist_access_path(apps, 1, bundle_id);
 	if (!app_found) {
 		if (apps)
 			plist_free(apps);

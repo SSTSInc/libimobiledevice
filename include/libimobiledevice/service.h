@@ -37,12 +37,15 @@ typedef enum {
 	SERVICE_E_MUX_ERROR           = -3,
 	SERVICE_E_SSL_ERROR           = -4,
 	SERVICE_E_START_SERVICE_ERROR = -5,
+	SERVICE_E_NOT_ENOUGH_DATA     = -6,
+	SERVICE_E_TIMEOUT             = -7,
 	SERVICE_E_UNKNOWN_ERROR       = -256
 } service_error_t;
 
-typedef struct service_client_private service_client_private;
+typedef struct service_client_private service_client_private; /**< \private */
 typedef service_client_private* service_client_t; /**< The client handle. */
 
+/** service constructor cast */
 #define SERVICE_CONSTRUCTOR(x) (int32_t (*)(idevice_t, lockdownd_service_descriptor_t, void**))(x)
 
 /* Interface */
@@ -59,7 +62,7 @@ typedef service_client_private* service_client_t; /**< The client handle. */
  *     SERVICE_E_INVALID_ARG when one of the arguments is invalid,
  *     or SERVICE_E_MUX_ERROR when connecting to the device failed.
  */
-service_error_t service_client_new(idevice_t device, lockdownd_service_descriptor_t service, service_client_t *client);
+LIBIMOBILEDEVICE_API service_error_t service_client_new(idevice_t device, lockdownd_service_descriptor_t service, service_client_t *client);
 
 /**
  * Starts a new service on the specified device with given name and
@@ -72,11 +75,13 @@ service_error_t service_client_new(idevice_t device, lockdownd_service_descripto
  *     use.
  * @param label The label to use for communication. Usually the program name.
  *  Pass NULL to disable sending the label in requests to lockdownd.
+ * @param constructor_func Constructor function for the service client to create (e.g. afc_client_new())
+ * @param error_code Pointer to an int32_t that will receive the service start error code.
  *
  * @return SERVICE_E_SUCCESS on success, or a SERVICE_E_* error code
  *     otherwise.
  */
-service_error_t service_client_factory_start_service(idevice_t device, const char* service_name, void **client, const char* label, int32_t (*constructor_func)(idevice_t, lockdownd_service_descriptor_t, void**), int32_t *error_code);
+LIBIMOBILEDEVICE_API service_error_t service_client_factory_start_service(idevice_t device, const char* service_name, void **client, const char* label, int32_t (*constructor_func)(idevice_t, lockdownd_service_descriptor_t, void**), int32_t *error_code);
 
 /**
  * Frees a service instance.
@@ -85,9 +90,9 @@ service_error_t service_client_factory_start_service(idevice_t device, const cha
  *
  * @return SERVICE_E_SUCCESS on success,
  *     SERVICE_E_INVALID_ARG when client is invalid, or a
- *     SERVICE_E_UNKNOWN_ERROR when another error occured.
+ *     SERVICE_E_UNKNOWN_ERROR when another error occurred.
  */
-service_error_t service_client_free(service_client_t client);
+LIBIMOBILEDEVICE_API service_error_t service_client_free(service_client_t client);
 
 
 /**
@@ -103,7 +108,7 @@ service_error_t service_client_free(service_client_t client);
  *      invalid, or SERVICE_E_UNKNOWN_ERROR when an unspecified
  *      error occurs.
  */
-service_error_t service_send(service_client_t client, const char *data, uint32_t size, uint32_t *sent);
+LIBIMOBILEDEVICE_API service_error_t service_send(service_client_t client, const char *data, uint32_t size, uint32_t *sent);
 
 /**
  * Receives data using the given service client with specified timeout.
@@ -120,7 +125,7 @@ service_error_t service_send(service_client_t client, const char *data, uint32_t
  *      occurs, or SERVICE_E_UNKNOWN_ERROR when an unspecified
  *      error occurs.
  */
-service_error_t service_receive_with_timeout(service_client_t client, char *data, uint32_t size, uint32_t *received, unsigned int timeout);
+LIBIMOBILEDEVICE_API service_error_t service_receive_with_timeout(service_client_t client, char *data, uint32_t size, uint32_t *received, unsigned int timeout);
 
 /**
  * Receives data using the given service client.
@@ -132,11 +137,13 @@ service_error_t service_receive_with_timeout(service_client_t client, char *data
  *
  * @return SERVICE_E_SUCCESS on success,
  *      SERVICE_E_INVALID_ARG when one or more parameters are
- *      invalid, SERVICE_E_MUX_ERROR when a communication error
+ *      invalid, SERVICE_E_NOT_ENOUGH_DATA when not enough data
+ *      received, SERVICE_E_TIMEOUT when the connection times out,
+ *      SERVICE_E_MUX_ERROR when a communication error
  *      occurs, or SERVICE_E_UNKNOWN_ERROR when an unspecified
  *      error occurs.
  */
-service_error_t service_receive(service_client_t client, char *data, uint32_t size, uint32_t *received);
+LIBIMOBILEDEVICE_API service_error_t service_receive(service_client_t client, char *data, uint32_t size, uint32_t *received);
 
 
 /**
@@ -146,21 +153,47 @@ service_error_t service_receive(service_client_t client, char *data, uint32_t si
  *
  * @return SERVICE_E_SUCCESS on success,
  *     SERVICE_E_INVALID_ARG if client or client->connection is
- *     NULL, SERVICE_E_SSL_ERROR when SSL could not be enabled,
+ *     NULL, SERVICE_E_NOT_ENOUGH_DATA when not enough data
+ *     received, SERVICE_E_TIMEOUT when the connection times out,
+ *     SERVICE_E_SSL_ERROR when SSL could not be enabled,
  *     or SERVICE_E_UNKNOWN_ERROR otherwise.
  */
-service_error_t service_enable_ssl(service_client_t client);
+LIBIMOBILEDEVICE_API service_error_t service_enable_ssl(service_client_t client);
 
 /**
  * Disable SSL for the given service client.
  *
- * @param client The connected service client for that SSL should be disabled.
+ * @param client The connected service client for which SSL should be disabled.
  *
  * @return SERVICE_E_SUCCESS on success,
  *     SERVICE_E_INVALID_ARG if client or client->connection is
  *     NULL, or SERVICE_E_UNKNOWN_ERROR otherwise.
  */
-service_error_t service_disable_ssl(service_client_t client);
+LIBIMOBILEDEVICE_API service_error_t service_disable_ssl(service_client_t client);
+
+/**
+ * Disable SSL for the given service client, optionally without sending SSL terminate messages.
+ *
+ * @param client The connected service client for which SSL should be disabled.
+ * @param sslBypass A boolean value indicating wether to disable SSL with a proper
+ *     SSL shutdown (0), or bypass the shutdown (1).
+ *
+ * @return SERVICE_E_SUCCESS on success,
+ *     SERVICE_E_INVALID_ARG if client or client->connection is
+ *     NULL, or SERVICE_E_UNKNOWN_ERROR otherwise.
+ */
+LIBIMOBILEDEVICE_API service_error_t service_disable_bypass_ssl(service_client_t client, uint8_t sslBypass);
+
+/**
+ * Return a handle to the parent #idevice_connection_t of the given service client.
+ *
+ * @param client The service client
+ * @param connection Pointer to be assigned to the #idevice_connection_t.
+ *
+ * @return SERVICE_E_SUCCESS on success,
+ *     SERVICE_E_INVALID_ARG if one or more of the arguments are invalid.
+ */
+LIBIMOBILEDEVICE_API service_error_t service_get_connection(service_client_t client, idevice_connection_t *connection);
 
 #ifdef __cplusplus
 }

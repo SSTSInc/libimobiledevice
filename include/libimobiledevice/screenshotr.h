@@ -4,8 +4,8 @@
  * @note Requires a mounted developer image.
  * \internal
  *
- * Copyright (c) 2010-2014 Martin Szulecki All Rights Reserved.
- * Copyright (c) 2010 Nikias Bassen All Rights Reserved.
+ * Copyright (c) 2010-2019 Nikias Bassen, All Rights Reserved.
+ * Copyright (c) 2010-2014 Martin Szulecki, All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -32,19 +32,22 @@ extern "C" {
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
 
+/** Service identifier passed to lockdownd_start_service() to start the screenshotr service */
 #define SCREENSHOTR_SERVICE_NAME "com.apple.mobile.screenshotr"
 
 /** Error Codes */
 typedef enum {
-	SCREENSHOTR_E_SUCCESS       =  0,
-	SCREENSHOTR_E_INVALID_ARG   = -1,
-	SCREENSHOTR_E_PLIST_ERROR   = -2,
-	SCREENSHOTR_E_MUX_ERROR     = -3,
-	SCREENSHOTR_E_BAD_VERSION   = -4,
-	SCREENSHOTR_E_UNKNOWN_ERROR = -256
+	SCREENSHOTR_E_SUCCESS         =  0,
+	SCREENSHOTR_E_INVALID_ARG     = -1,
+	SCREENSHOTR_E_PLIST_ERROR     = -2,
+	SCREENSHOTR_E_MUX_ERROR       = -3,
+	SCREENSHOTR_E_SSL_ERROR       = -4,
+	SCREENSHOTR_E_RECEIVE_TIMEOUT = -5,
+	SCREENSHOTR_E_BAD_VERSION     = -6,
+	SCREENSHOTR_E_UNKNOWN_ERROR   = -256
 } screenshotr_error_t;
 
-typedef struct screenshotr_client_private screenshotr_client_private;
+typedef struct screenshotr_client_private screenshotr_client_private; /**< \private */
 typedef screenshotr_client_private *screenshotr_client_t; /**< The client handle. */
 
 
@@ -63,7 +66,7 @@ typedef screenshotr_client_private *screenshotr_client_t; /**< The client handle
  *     or more parameters are invalid, or SCREENSHOTR_E_CONN_FAILED if the
  *     connection to the device could not be established.
  */
-screenshotr_error_t screenshotr_client_new(idevice_t device, lockdownd_service_descriptor_t service, screenshotr_client_t * client);
+LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_new(idevice_t device, lockdownd_service_descriptor_t service, screenshotr_client_t * client);
 
 /**
  * Starts a new screenshotr service on the specified device and connects to it.
@@ -78,7 +81,7 @@ screenshotr_error_t screenshotr_client_new(idevice_t device, lockdownd_service_d
  * @return SCREENSHOTR_E_SUCCESS on success, or an SCREENSHOTR_E_* error
  *     code otherwise.
  */
-screenshotr_error_t screenshotr_client_start_service(idevice_t device, screenshotr_client_t* client, const char* label);
+LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_start_service(idevice_t device, screenshotr_client_t* client, const char* label);
 
 /**
  * Disconnects a screenshotr client from the device and frees up the
@@ -89,7 +92,7 @@ screenshotr_error_t screenshotr_client_start_service(idevice_t device, screensho
  * @return SCREENSHOTR_E_SUCCESS on success, or SCREENSHOTR_E_INVALID_ARG
  *     if client is NULL.
  */
-screenshotr_error_t screenshotr_client_free(screenshotr_client_t client);
+LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_client_free(screenshotr_client_t client);
 
 
 /**
@@ -104,9 +107,9 @@ screenshotr_error_t screenshotr_client_free(screenshotr_client_t client);
  *
  * @return SCREENSHOTR_E_SUCCESS on success, SCREENSHOTR_E_INVALID_ARG if
  *     one or more parameters are invalid, or another error code if an
- *     error occured.
+ *     error occurred.
  */
-screenshotr_error_t screenshotr_take_screenshot(screenshotr_client_t client, char **imgdata, uint64_t *imgsize);
+LIBIMOBILEDEVICE_API screenshotr_error_t screenshotr_take_screenshot(screenshotr_client_t client, char **imgdata, uint64_t *imgsize);
 
 #ifdef __cplusplus
 }

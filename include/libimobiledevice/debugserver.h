@@ -30,7 +30,10 @@ extern "C" {
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
 
+/** Service identifier passed to lockdownd_start_service() to start the debugserver service */
 #define DEBUGSERVER_SERVICE_NAME "com.apple.debugserver"
+/** Service identifier passed to lockdownd_start_service() to start the secure debugserver service */
+#define DEBUGSERVER_SECURE_SERVICE_NAME DEBUGSERVER_SERVICE_NAME ".DVTSecureSocketProxy"
 
 /** Error Codes */
 typedef enum {
@@ -39,13 +42,14 @@ typedef enum {
 	DEBUGSERVER_E_MUX_ERROR      = -2,
 	DEBUGSERVER_E_SSL_ERROR      = -3,
 	DEBUGSERVER_E_RESPONSE_ERROR = -4,
+	DEBUGSERVER_E_TIMEOUT        = -5,
 	DEBUGSERVER_E_UNKNOWN_ERROR  = -256
 } debugserver_error_t;
 
-typedef struct debugserver_client_private debugserver_client_private;
+typedef struct debugserver_client_private debugserver_client_private; /**< \private */
 typedef debugserver_client_private *debugserver_client_t; /**< The client handle. */
 
-typedef struct debugserver_command_private debugserver_command_private;
+typedef struct debugserver_command_private debugserver_command_private; /**< \private */
 typedef debugserver_command_private *debugserver_command_t; /**< The command handle. */
 
 /* Interface */
@@ -62,7 +66,7 @@ typedef debugserver_command_private *debugserver_command_t; /**< The command han
  * @return DEBUGSERVER_E_SUCCESS on success, DEBUGSERVER_E_INVALID_ARG when
  *     client is NULL, or an DEBUGSERVER_E_* error code otherwise.
  */
-debugserver_error_t debugserver_client_new(idevice_t device, lockdownd_service_descriptor_t service, debugserver_client_t * client);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_new(idevice_t device, lockdownd_service_descriptor_t service, debugserver_client_t * client);
 
 /**
  * Starts a new debugserver service on the specified device and connects to it.
@@ -77,7 +81,7 @@ debugserver_error_t debugserver_client_new(idevice_t device, lockdownd_service_d
  * @return DEBUGSERVER_E_SUCCESS on success, or an DEBUGSERVER_E_* error
  *     code otherwise.
  */
-debugserver_error_t debugserver_client_start_service(idevice_t device, debugserver_client_t * client, const char* label);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_start_service(idevice_t device, debugserver_client_t * client, const char* label);
 
 /**
  * Disconnects a debugserver client from the device and frees up the
@@ -88,7 +92,7 @@ debugserver_error_t debugserver_client_start_service(idevice_t device, debugserv
  * @return DEBUGSERVER_E_SUCCESS on success, DEBUGSERVER_E_INVALID_ARG when
  *     client is NULL, or an DEBUGSERVER_E_* error code otherwise.
  */
-debugserver_error_t debugserver_client_free(debugserver_client_t client);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_free(debugserver_client_t client);
 
 /**
  * Sends raw data using the given debugserver service client.
@@ -103,7 +107,7 @@ debugserver_error_t debugserver_client_free(debugserver_client_t client);
  *      invalid, or DEBUGSERVER_E_UNKNOWN_ERROR when an unspecified
  *      error occurs.
  */
-debugserver_error_t debugserver_client_send(debugserver_client_t client, const char* data, uint32_t size, uint32_t *sent);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_send(debugserver_client_t client, const char* data, uint32_t size, uint32_t *sent);
 
 /**
  * Receives raw data using the given debugserver client with specified timeout.
@@ -117,10 +121,11 @@ debugserver_error_t debugserver_client_send(debugserver_client_t client, const c
  * @return DEBUGSERVER_E_SUCCESS on success,
  *      DEBUGSERVER_E_INVALID_ARG when one or more parameters are
  *      invalid, DEBUGSERVER_E_MUX_ERROR when a communication error
- *      occurs, or DEBUGSERVER_E_UNKNOWN_ERROR when an unspecified
+ *      occurs, DEBUGSERVER_E_TIMEOUT when the timeout is reached,
+ *      or DEBUGSERVER_E_UNKNOWN_ERROR when an unspecified
  *      error occurs.
  */
-debugserver_error_t debugserver_client_receive_with_timeout(debugserver_client_t client, char *data, uint32_t size, uint32_t *received, unsigned int timeout);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_receive_with_timeout(debugserver_client_t client, char *data, uint32_t size, uint32_t *received, unsigned int timeout);
 
 /**
  * Receives raw data from the debugserver service.
@@ -134,7 +139,7 @@ debugserver_error_t debugserver_client_receive_with_timeout(debugserver_client_t
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when client or plist is NULL
  */
-debugserver_error_t debugserver_client_receive(debugserver_client_t client, char *data, uint32_t size, uint32_t *received);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_receive(debugserver_client_t client, char *data, uint32_t size, uint32_t *received);
 
 /**
  * Sends a command to the debugserver service.
@@ -142,22 +147,24 @@ debugserver_error_t debugserver_client_receive(debugserver_client_t client, char
  * @param client The debugserver client
  * @param command Command to process and send
  * @param response Response received for the command (can be NULL to ignore)
+ * @param response_size Pointer to receive response size. Set to NULL to ignore.
  *
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when client or command is NULL
  */
-debugserver_error_t debugserver_client_send_command(debugserver_client_t client, debugserver_command_t command, char** response);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_send_command(debugserver_client_t client, debugserver_command_t command, char** response, size_t* response_size);
 
 /**
  * Receives and parses response of debugserver service.
  *
  * @param client The debugserver client
  * @param response Response received for last command (can be NULL to ignore)
+ * @param response_size Pointer to receive response size. Set to NULL to ignore.
  *
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when client is NULL
  */
-debugserver_error_t debugserver_client_receive_response(debugserver_client_t client, char** response);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_receive_response(debugserver_client_t client, char** response, size_t* response_size);
 
 /**
  * Controls status of ACK mode when sending commands or receiving responses.
@@ -171,7 +178,26 @@ debugserver_error_t debugserver_client_receive_response(debugserver_client_t cli
  * @return DEBUGSERVER_E_SUCCESS on success, or an DEBUGSERVER_E_* error
  *     code otherwise.
  */
-debugserver_error_t debugserver_client_set_ack_mode(debugserver_client_t client, int enabled);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_set_ack_mode(debugserver_client_t client, int enabled);
+
+/**
+ * Sets behavior when awaiting a response from the server.
+ *
+ * @see debugserver_client_send_command, debugserver_client_receive_response,
+ *   debugserver_client_receive
+ *
+ * @param client The debugserver client
+ * @param cancel_receive A function pointer that will be called approximately
+ *     every receive_loop_timeout milliseconds; the function should return a
+ *     boolean flag specifying whether to stop waiting for a response. If NULL,
+ *     behaves as if it always returns true.
+ * @param receive_loop_timeout Time in milliseconds between calls to
+ *     cancel_receive.
+ *
+ * @return DEBUGSERVER_E_SUCCESS on success, or an DEBUGSERVER_E_* error
+ *     code otherwise.
+ */
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_set_receive_params(debugserver_client_t client, int (*cancel_receive)(), int receive_loop_timeout);
 
 /**
  * Sets the argv which launches an app.
@@ -184,7 +210,7 @@ debugserver_error_t debugserver_client_set_ack_mode(debugserver_client_t client,
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when client is NULL
  */
-debugserver_error_t debugserver_client_set_argv(debugserver_client_t client, int argc, char* argv[], char** response);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_set_argv(debugserver_client_t client, int argc, char* argv[], char** response);
 
 /**
  * Adds or sets an environment variable.
@@ -196,7 +222,7 @@ debugserver_error_t debugserver_client_set_argv(debugserver_client_t client, int
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when client is NULL
  */
-debugserver_error_t debugserver_client_set_environment_hex_encoded(debugserver_client_t client, const char* env, char** response);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_set_environment_hex_encoded(debugserver_client_t client, const char* env, char** response);
 
 /**
  * Creates and initializes a new command object.
@@ -209,7 +235,7 @@ debugserver_error_t debugserver_client_set_environment_hex_encoded(debugserver_c
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when name or command is NULL
  */
-debugserver_error_t debugserver_command_new(const char* name, int argc, char* argv[], debugserver_command_t* command);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_command_new(const char* name, int argc, char* argv[], debugserver_command_t* command);
 
 /**
  * Frees memory of command object.
@@ -219,7 +245,7 @@ debugserver_error_t debugserver_command_new(const char* name, int argc, char* ar
  * @return DEBUGSERVER_E_SUCCESS on success,
  *  DEBUGSERVER_E_INVALID_ARG when command is NULL
  */
-debugserver_error_t debugserver_command_free(debugserver_command_t command);
+LIBIMOBILEDEVICE_API debugserver_error_t debugserver_command_free(debugserver_command_t command);
 
 /**
  * Encodes a string into hex notation.
@@ -228,7 +254,7 @@ debugserver_error_t debugserver_command_free(debugserver_command_t command);
  * @param encoded_buffer The buffer receives a hex encoded string
  * @param encoded_length Length of the hex encoded string
  */
-void debugserver_encode_string(const char* buffer, char** encoded_buffer, uint32_t* encoded_length);
+LIBIMOBILEDEVICE_API void debugserver_encode_string(const char* buffer, char** encoded_buffer, uint32_t* encoded_length);
 
 /**
  * Decodes a hex encoded string.
@@ -237,7 +263,7 @@ void debugserver_encode_string(const char* buffer, char** encoded_buffer, uint32
  * @param encoded_length Length of the encoded buffer
  * @param buffer Decoded string to be freed by the caller
  */
-void debugserver_decode_string(const char *encoded_buffer, size_t encoded_length, char** buffer);
+LIBIMOBILEDEVICE_API void debugserver_decode_string(const char *encoded_buffer, size_t encoded_length, char** buffer);
 
 #ifdef __cplusplus
 }

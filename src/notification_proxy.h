@@ -22,14 +22,15 @@
 #ifndef __NOTIFICATION_PROXY_H
 #define __NOTIFICATION_PROXY_H
 
+#include "idevice.h"
 #include "libimobiledevice/notification_proxy.h"
 #include "property_list_service.h"
-#include "common/thread.h"
+#include <libimobiledevice-glue/thread.h>
 
 struct np_client_private {
 	property_list_service_client_t parent;
 	mutex_t mutex;
-	thread_t notifier;
+	THREAD_T notifier;
 };
 
 void* np_notifier(void* arg);
